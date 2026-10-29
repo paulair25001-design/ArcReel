@@ -160,7 +160,12 @@ def prepare_hermes_home(
         "agent": agent,
         "auxiliary": {
             "vision": dict(local_route),
-            "compression": dict(local_route),
+            "compression": {
+                **local_route,
+                "reasoning_effort": "none",
+                "max_output_tokens": 8192,
+                "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+            },
             "title_generation": {"enabled": False},
         },
         "fallback_providers": [],
@@ -173,7 +178,13 @@ def prepare_hermes_home(
         "memory": {"memory_enabled": False, "user_profile_enabled": False},
         "stt": {"enabled": False},
         "tts": {"provider": "local_handoff"},
-        "compression": {"enabled": agent_tools, "threshold_tokens": 150000},
+        "compression": {
+            "enabled": agent_tools,
+            "threshold_tokens": 150000,
+            "tail_mode": "legacy",
+            "context_timeout_seconds": 120,
+            "context_total_ceiling_seconds": 600,
+        },
     }
     atomic_write_json(target / "config.yaml", payload)
     (target / "config.yaml").chmod(0o600)

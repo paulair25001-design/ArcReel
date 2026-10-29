@@ -5,17 +5,28 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from lib.local_runtime.config import get_local_runtime_config
+from lib.local_runtime.hermes_process import prepare_hermes_home
 
 
 def test_installed_mcp_and_model_image_pipeline_uses_pixels_without_network(tmp_path: Path):
     config = get_local_runtime_config()
     if not Path(config.hermes_python).is_file():
         pytest.skip("Installed Hermes runtime is unavailable; no model is installed by this test")
+    config = replace(
+        config,
+        hermes_home=tmp_path / "hermes",
+        hermes_model="local-qwen",
+        hermes_base_url="http://127.0.0.1:8000/v1",
+        hermes_api_key="private-test",
+    )
+    home = config.hermes_home / "attempt"
+    prepare_hermes_home(config, home)
     runtime = Path(__file__).resolve().parents[4] / "server/agent_runtime"
     script = r"""
 import asyncio, base64, hashlib, importlib, importlib.util, io, json, os, socket, sys, types
@@ -24,14 +35,6 @@ def no_network(*args, **kwargs):
     raise AssertionError("Network is forbidden in the installed-runtime integration test")
 socket.socket.connect = no_network
 home = Path(os.environ["HERMES_HOME"])
-home.mkdir()
-(home / "config.yaml").write_text(json.dumps({"model": {
-    "default": "local-qwen", "provider": "omlx", "base_url": "http://127.0.0.1:8000/v1",
-    "supports_vision": True}, "agent": {"image_input_mode": "native"},
-    "providers": {"omlx": {"name": "oMLX", "base_url": "http://127.0.0.1:8000/v1",
-        "api_key": "private-test", "default_model": "local-qwen"}},
-    "auxiliary": {"compression": {"provider": "omlx", "model": "local-qwen",
-        "base_url": "http://127.0.0.1:8000/v1"}}}))
 def load(name, filename):
     spec = importlib.util.spec_from_file_location(name, Path(sys.argv[1]) / filename)
     module = importlib.util.module_from_spec(spec)
@@ -39,6 +42,12 @@ def load(name, filename):
     return module
 bootstrap = load("arcreel_bootstrap", "hermes_acp_bootstrap.py")
 bootstrap.install_isolated_env_loader()
+from hermes_cli.config import load_config_readonly
+profile = load_config_readonly()
+assert profile["model"]["max_tokens"] == 65536
+assert profile["compression"]["tail_mode"] == "legacy"
+assert "max_summary_tokens" not in profile["compression"]
+assert profile["compression"]["context_total_ceiling_seconds"] == 600
 bridge = load("arcreel_vision", "hermes_vision_bridge.py")
 native = importlib.import_module("tools.mcp_tool")
 from mcp.types import CallToolResult, TextContent, ImageContent
@@ -115,28 +124,38 @@ with OpenAI(api_key="private-test", base_url=agent.base_url,
             "function": {"name": "mcp__arcreel__inspect_images", "arguments": "{}"}}]},
         {key: value for key, value in canonical.items() if key in {"role", "content", "tool_call_id", "name"}}])
 auxiliary = importlib.import_module("agent.auxiliary_client")
+lane = auxiliary.resolve_compression_fast_lane("omlx", "local-qwen",
+    route_config=profile["auxiliary"]["compression"])
+assert lane.certified_non_reasoning and lane.max_tokens == 8192
 compressor_module = importlib.import_module("agent.context_compressor")
 transport.install_auxiliary(auxiliary)
 transport.install_compression(compressor_module, auxiliary)
 batch_a = native._make_tool_handler("arcreel", "inspect_images", 30)({})
 batch_b = native._make_tool_handler("arcreel", "inspect_images", 30)({})
 compression_seen = []
+summary_finish_reason = "stop"
 def summary_response(request):
     body = json.loads(request.content)
     count = sum(1 for message in body["messages"] if isinstance(message.get("content"), list)
         for part in message["content"] if isinstance(part, dict) and part.get("type") == "image_url")
     compression_seen.append(count)
+    if count == 0:
+        assert body["chat_template_kwargs"]["enable_thinking"] is False
+        assert body["max_tokens"] == 8192
+        assert "Target ~1536 tokens." in body["messages"][0]["content"]
+    else:
+        assert "chat_template_kwargs" not in body
     summary = "## Active Task\nContinue the user's native production task. Inspect the pending A/B images before deciding actions.\n## Progress\nEarlier text facts summarized; no media submitted."
     if body.get("stream"):
         chunks = [{"id": "summary", "object": "chat.completion.chunk", "created": 0, "model": "local-qwen",
             "choices": [{"index": 0, "delta": {"role": "assistant", "content": summary}, "finish_reason": None}]},
             {"id": "summary", "object": "chat.completion.chunk", "created": 0, "model": "local-qwen",
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}]
+            "choices": [{"index": 0, "delta": {}, "finish_reason": summary_finish_reason}]}]
         return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
             content="".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks) + "data: [DONE]\n\n")
     return httpx.Response(200, json={"id": "summary", "object": "chat.completion", "created": 0,
         "model": "local-qwen", "choices": [{"index": 0, "message": {"role": "assistant",
-        "content": summary}, "finish_reason": "stop"}]})
+        "content": summary}, "finish_reason": summary_finish_reason}]})
 original_init = httpx.Client.__init__
 def mocked_init(self, *args, **kwargs):
     kwargs["transport"] = httpx.MockTransport(summary_response)
@@ -155,7 +174,9 @@ history.extend([{"role": "assistant", "content": None, "tool_calls": [
     make_tool_result_message("mcp__arcreel__inspect_images", batch_b["content"], "b")])
 compressor = compressor_module.ContextCompressor(model="local-qwen", provider="custom", base_url=agent.base_url,
     api_key="private-test", config_context_length=262144, quiet_mode=True, protect_first_n=2,
-    protect_last_n=4, tail_mode="lean", threshold_tokens_cap=5000)
+    protect_last_n=4, tail_mode=profile["compression"]["tail_mode"], threshold_tokens_cap=5000)
+bootstrap.configure_project_compression(types.SimpleNamespace(context_compressor=compressor))
+assert compressor._compute_summary_budget(history) == 1536
 compressed = compressor.compress(history, current_tokens=180000, force=True)
 def count_images(messages):
     return sum(1 for message in messages if isinstance(message.get("content"), list)
@@ -170,13 +191,26 @@ with OpenAI(api_key="private-test", base_url=agent.base_url, max_retries=0) as c
 assert compression_seen == [0, 16], compression_seen
 # Delivered images return to the stock newest-tool-only aging policy.
 assert count_images(compressor_module._strip_historical_media(compressed)) == 8
+good_counts = list(compression_seen)
+summary_finish_reason = "length"
+truncated = compressor_module.ContextCompressor(model="local-qwen", provider="custom", base_url=agent.base_url,
+    api_key="private-test", config_context_length=262144, quiet_mode=True, protect_first_n=2,
+    protect_last_n=4, tail_mode=profile["compression"]["tail_mode"], threshold_tokens_cap=5000)
+bootstrap.configure_project_compression(types.SimpleNamespace(context_compressor=truncated))
+truncated.compress(history, current_tokens=180000, force=True)
+assert truncated.compression_count == 0 and truncated._last_compress_aborted
+assert truncated._previous_summary is None
 receipts = [json.loads(line) for line in (home / "vision-wire-audit.jsonl").read_text().splitlines()]
 request = next(row for row in receipts if row["event"] == "request")
 print(json.dumps({"supports_vision": vision, "supports_tool_images": tool_vision,
     "native_multimodal": result["_multimodal"], "seen": seen,
     "ui_has_no_pixels": "data:image" not in ui_json and base64.b64encode(jpeg).decode() not in ui_json,
     "native_compression_count": compressor.compression_count,
-    "compression_then_main_image_counts": compression_seen,
+    "compression_thinking_disabled": lane.certified_non_reasoning,
+    "compression_hard_cap": lane.max_tokens,
+    "compression_soft_budget": compressor._compute_summary_budget(history),
+    "compression_then_main_image_counts": good_counts,
+    "truncated_summary_not_committed": truncated.compression_count == 0 and truncated._previous_summary is None,
     "canonical_image_token_estimate": small_estimate,
     "image_count": request["image_count"], "required_images_present": request["required_images_present"],
     "accepted_for_send": request["accepted_for_send"]}))
@@ -188,7 +222,7 @@ print(json.dumps({"supports_vision": vision, "supports_tool_images": tool_vision
             "PATH": os.defpath,
             "PYTHONPATH": str(config.hermes_source),
             "PYTHONDONTWRITEBYTECODE": "1",
-            "HERMES_HOME": str(tmp_path / "hermes"),
+            "HERMES_HOME": str(home),
             "HF_HUB_OFFLINE": "1",
             "TRANSFORMERS_OFFLINE": "1",
         },
@@ -207,6 +241,10 @@ print(json.dumps({"supports_vision": vision, "supports_tool_images": tool_vision
     assert receipt["required_images_present"]
     assert receipt["accepted_for_send"]
     assert receipt["native_compression_count"] > 0
+    assert receipt["compression_thinking_disabled"]
+    assert receipt["compression_hard_cap"] == 8192
+    assert receipt["compression_soft_budget"] == 1536
+    assert receipt["truncated_summary_not_committed"]
     assert receipt["compression_then_main_image_counts"] == [0, 16]
     assert 1500 <= receipt["canonical_image_token_estimate"] < 3000
     assert receipt["seen"] == [

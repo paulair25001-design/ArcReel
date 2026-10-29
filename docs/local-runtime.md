@@ -70,6 +70,8 @@ Hermes 的 HTTP 资源屏障由本仓库的 `lib/local_runtime/resource_queue.py
 
 后台结构化文本任务向 oMLX 提交原始 JSON schema，并同时请求 `response_format` 与显式 `structured_outputs`。每个新 worker 的 `wire-audit.json` 只保存实际 HTTP 出站的端点、模型匹配标记及两处 schema 的哈希，不保存提示词、密钥、HTTP 头或响应正文。约束在传输过程中缺失或改变时，worker 在发送前拒绝请求。该回执证明实际提交的约束，不证明服务端 logits processor 已执行；后者仍需服务端运行证据。历史任务不会补写回执。
 
+长会话的原生摘要继续使用同一个本地模型。仅该项目的摘要请求关闭思考输出，原生压缩器采用 1,536 token 的软摘要目标、不附加额外长会话日志预算；摘要硬输出上限为 8,192，原生总时限仍为 600 秒。主制作推理的输出上限保持原值。达到长度上限、超时或未完整提交的摘要都不当作成功，不删除原始会话；从原目标恢复时继续对账。配置与实例适配只在本项目 Hermes 子进程生效，不改全局 Hermes 或 oMLX 设置。
+
 本地配音原始执行回执保存在 `runtime/tts/receipts/`，版本记录绑定原始回执哈希及实际提交的 WAV。回执中的「未听审」状态保持原样。
 
 配音由本仓库的 `lib/local_runtime/qwen_tts_worker.py` 直接调用已安装的独立 MLX Audio 引擎库。模型必须是已存在的本地 Qwen3-TTS VoiceDesign；引擎运行在禁止网络的 macOS 沙箱中，并关闭模型下载、参考音频转录、自动播放与云端回退。声音输入经权限为 `0600` 的项目私有请求文件传入，不出现在命令行或正常标准输出中；完整 PCM 验证后才登记版本。项目代码不调用外部 skill wrapper、旧制作流程或它们的锁文件。

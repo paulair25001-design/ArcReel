@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,22 @@ def configure_project_instructions(agent: Any, prompt: str) -> None:
     agent.load_soul_identity = False
     agent.skip_background_review = True
     agent._invalidate_system_prompt()
+
+
+def configure_project_compression(agent: Any) -> None:
+    """Bound this local agent's native summary prompt without changing its main budget."""
+    compressor: Any = getattr(agent, "context_compressor", None)
+    original = getattr(compressor, "_compute_summary_budget", None)
+    if not callable(original) or getattr(compressor, "tail_mode", None) != "legacy":
+        raise RuntimeError("Hermes did not apply the project's native compression mode")
+
+    def bounded(_engine: Any, turns: Any) -> int:
+        budget = original(turns)
+        if type(budget) is not int or budget < 1:
+            raise RuntimeError("Hermes returned an invalid native summary budget")
+        return min(budget, 1536)
+
+    compressor._compute_summary_budget = types.MethodType(bounded, compressor)
 
 
 def require_project_prompt(text: str) -> None:
@@ -151,6 +168,7 @@ def main() -> None:
             configure_project_instructions(
                 agent, os.environ["HERMES_EPHEMERAL_SYSTEM_PROMPT"] + bridge.TRUSTED_VISION_NOTICE
             )
+            configure_project_compression(agent)
             restrict_agent_tools(agent, tools.get_tool_definitions)
             return agent
 
