@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from lib.infra.api_errors import BadRequestError, ConflictError, NotFoundError, ServiceUnavailableError
 from lib.local_runtime.config import local_only_enabled
@@ -26,6 +26,11 @@ class StartAutonomousProduction(BaseModel):
         if not value.strip():
             raise ValueError("must contain non-whitespace characters")
         return value.strip()
+
+
+class RetryAutonomousProduction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: StrictInt = Field(ge=0)
 
 
 def _service():
@@ -73,4 +78,14 @@ async def get_production(project_name: str, run_id: str, user: CurrentUser):
 async def stop_production(project_name: str, run_id: str, user: CurrentUser):
     await _owned(project_name, run_id, user.id)
     goal = await _service().stop(run_id, user.id)
+    return {"goal": public_goal(goal)}
+
+
+@router.post("/projects/{project_name}/autonomous-production/{run_id}/retry")
+async def retry_production(project_name: str, run_id: str, body: RetryAutonomousProduction, user: CurrentUser):
+    await _owned(project_name, run_id, user.id)
+    try:
+        goal = await _service().retry(run_id, user.id, body.expected_revision)
+    except ValueError as error:
+        raise ConflictError("autonomy_goal_conflict") from error
     return {"goal": public_goal(goal)}

@@ -304,6 +304,80 @@ class AutonomyStore:
             await session.commit()
             return _record(row)
 
+    async def retry(self, run_id: str, user_id: str, expected_revision: int) -> dict[str, Any]:
+        """Explicitly recover an attention goal, retaining its exact SDK session.
+
+        The observed terminal revision is the retry identity. A lost response can
+        be reconciled without starting another attempt or reviving a stopped goal.
+        """
+        _run_id(run_id)
+        _nonempty(user_id, "user_id")
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("expected_revision must be a nonnegative integer")
+        _, now = self._now()
+        async with self._session_factory() as session:
+            current = (
+                await session.execute(
+                    select(AutonomousProduction).where(
+                        AutonomousProduction.id == run_id, AutonomousProduction.user_id == user_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if current is None:
+                raise ValueError("The autonomous goal was not found")
+            payload = json.loads(current.payload_json)
+            pending = payload.get("pending_delivery") or {}
+            if pending.get("retry_of_revision") == expected_revision:
+                return _record(current)
+            if current.state != "attention" or current.revision != expected_revision:
+                raise ValueError("Only the observed attention goal can be retried")
+            payload.update(
+                last_error=None,
+                last_progress_digest=None,
+                unchanged_turns=0,
+                pending_delivery={
+                    "phase": "reconcile_required",
+                    "client_key": pending.get("client_key", f"autonomy:{run_id}:retry:{expected_revision}"),
+                    "retry_of_revision": expected_revision,
+                },
+            )
+            try:
+                row = (
+                    await session.execute(
+                        sql_update(AutonomousProduction)
+                        .where(
+                            AutonomousProduction.id == run_id,
+                            AutonomousProduction.user_id == user_id,
+                            AutonomousProduction.state == "attention",
+                            AutonomousProduction.revision == expected_revision,
+                        )
+                        .values(
+                            state="pending",
+                            lease_owner=None,
+                            lease_until=0,
+                            payload_json=_json(payload),
+                            updated_at=now,
+                            revision=current.revision + 1,
+                        )
+                        .returning(AutonomousProduction)
+                        .execution_options(synchronize_session="fetch")
+                    )
+                ).scalar_one_or_none()
+                if row is None:
+                    await session.rollback()
+                    reconciled = await self.get(run_id, user_id)
+                    if (
+                        reconciled is not None
+                        and (reconciled.get("pending_delivery") or {}).get("retry_of_revision") == expected_revision
+                    ):
+                        return reconciled
+                    raise ValueError("The autonomous goal changed before retry admission")
+                await session.commit()
+                return _record(row)
+            except IntegrityError as error:
+                await session.rollback()
+                raise ValueError("The project already has another active autonomous goal") from error
+
     async def stop(self, run_id: str, user_id: str) -> dict[str, Any]:
         _run_id(run_id)
         _nonempty(user_id, "user_id")

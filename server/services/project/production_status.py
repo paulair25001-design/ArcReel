@@ -34,6 +34,7 @@ from lib.infra.content_digest import prefixed_canonical_json_digest
 from lib.infra.logging_utils import redact_diagnostic_text
 from lib.infra.media_probe import MediaProbe, probe_media
 from lib.infra.path_safety import safe_join
+from lib.local_runtime.config import local_only_enabled
 from lib.local_runtime.l20_direct_config import get_l20_direct_config
 from lib.project.asset_types import ASSET_SPECS
 from lib.project.project_manager import ProjectManager, find_episode, get_project_manager
@@ -48,6 +49,7 @@ from lib.script.script_editor import resolve_items
 from lib.script.script_models import get_generated_assets
 from lib.script.storyboard_sequence import get_storyboard_items
 from lib.workflow.workflow_state import WorkflowStateService
+from server.services.project.visual_observation import read_visual_observation_status
 
 
 class ProductionEpisodeNotFound(ValueError):
@@ -461,6 +463,7 @@ async def read_episode_production_status(
     queue: GenerationQueue | None = None,
     resource_state_path: Path | None = None,
     media_probe: Callable[[Path], Awaitable[MediaProbe]] = probe_media,
+    goal_store: Any = None,
 ) -> dict[str, Any]:
     """Only a current narrated, subtitled final cut covering this episode completes it."""
     projects = projects or await asyncio.to_thread(get_project_manager)
@@ -549,4 +552,33 @@ async def read_episode_production_status(
         )
     ]
     result["goal_complete_technical"] = episode_final_cut_complete(episode_id, result["units"], timelines)
+    result["visual_observation"] = {
+        "enabled": False,
+        "ready": True,
+        "required_count": 0,
+        "matched_count": 0,
+        "missing": [],
+        "inspection_requests": [],
+        "action": None,
+        "proof_digest": None,
+    }
+    if local_only_enabled():
+        from server.agent_runtime.autonomy_store import ACTIVE_STATES, AutonomyStore
+
+        goal = await (goal_store or AutonomyStore()).get_latest(project_name, user_id)
+        if (
+            goal is not None
+            and goal.get("episode_id") == episode_id
+            and goal.get("state") in ACTIVE_STATES | {"attention"}
+        ):
+            session_id = goal.get("session_id")
+            if isinstance(session_id, str) and session_id:
+                result["visual_observation"] = await read_visual_observation_status(
+                    project_name, episode_id, session_id, projects=projects, user_id=user_id
+                )
+            else:
+                result["visual_observation"].update(enabled=True, ready=False, problem="goal_session_missing")
+            result["goal_complete_technical"] = (
+                result["goal_complete_technical"] and result["visual_observation"]["ready"]
+            )
     return result

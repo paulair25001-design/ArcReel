@@ -206,7 +206,14 @@ async def invoke_declaration(
         return ToolOutcome(problem=problem)
     from server.services.project.autonomous_stage import production_tool_admission
 
-    async with production_tool_admission(declaration.name, scope, caller, services, goal_store=goal_store) as problem:
+    async with production_tool_admission(
+        declaration.name,
+        scope,
+        caller,
+        services,
+        goal_store=goal_store,
+        arguments=request.model_dump(mode="json", by_alias=True),
+    ) as problem:
         if problem is not None:
             return ToolOutcome(problem=problem)
         return await declaration.handler(ToolRequest(request), scope, caller, services)

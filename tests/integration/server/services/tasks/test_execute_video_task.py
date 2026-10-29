@@ -47,6 +47,52 @@ from tests.integration.server.services.tasks.generation_tasks_support import (
 
 
 class TestGenerationTasks:
+    @pytest.mark.parametrize("change_during_observation", [False, True])
+    async def test_video_worker_checks_frozen_frames_before_checkpoint_or_provider_submit(
+        self, monkeypatch, tmp_path, change_during_observation
+    ):
+        from server.services.project import visual_observation
+
+        project_path = prepare_files(tmp_path)
+        fake_pm = _FakePM(project_path)
+        seed_current_storyboard(fake_pm)
+        fake_pm.script["segments"][0]["novel_text"] = "正式旁白"
+        fake_pm.script["segments"][0]["video_prompt"] = {"action": "current action", "camera_motion": "Static"}
+        observed = []
+        provider_calls = []
+
+        async def refuse(project_name, episode_id, resource_id, *, first, tail, projects, user_id):
+            observed.append((project_name, episode_id, resource_id, first, await asyncio.to_thread(first.read_bytes)))
+            if change_during_observation:
+                await asyncio.to_thread((project_path / "storyboards/scene_E1S01.png").write_bytes, b"changed-frame")
+            else:
+                raise ValueError("frozen pixels have not been observed")
+
+        class CheckpointGenerator(FakeGenerator):
+            async def generate_video_async(self, **kwargs):
+                await kwargs["before_submit"]()
+                provider_calls.append(kwargs)
+
+        queue = type("Queue", (), {})()
+        queue.persist_execution_checkpoint = AsyncMock()
+        use_project_manager(monkeypatch, fake_pm)
+        use_generation_context(monkeypatch, fake_resolve_ctx(CheckpointGenerator()))
+        monkeypatch.setattr(generation_tasks, "get_generation_queue", lambda: queue)
+        monkeypatch.setattr(visual_observation, "assert_frozen_video_frames_observed", refuse)
+        reason = (
+            "formal artifact input changed" if change_during_observation else "frozen pixels have not been observed"
+        )
+        with pytest.raises(ValueError, match=reason):
+            await generation_tasks.execute_video_task(
+                "demo", "E1S01", {"script_file": "episode_1.json"}, task_id="task-frozen-proof"
+            )
+        assert len(observed) == 1
+        assert observed[0][:3] == ("demo", 1, "E1S01")
+        assert ".arcreel/tasks/task-frozen-proof/provider_media/" in observed[0][3].as_posix()
+        assert observed[0][4] == b"png"
+        assert provider_calls == []
+        queue.persist_execution_checkpoint.assert_not_awaited()
+
     async def test_execute_video_task_rechecks_audio_switch_from_request_facts(self, monkeypatch, tmp_path):
         project_path = prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)

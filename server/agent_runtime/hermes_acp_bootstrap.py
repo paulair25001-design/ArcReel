@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib
+import importlib.util
 import json
 import logging
 import os
@@ -109,9 +110,26 @@ def main() -> None:
         print(json.dumps({"deleted": bool(deleted)}))
         return
 
+    bridge_spec = importlib.util.spec_from_file_location(
+        "arcreel_hermes_vision_bridge", Path(__file__).with_name("hermes_vision_bridge.py")
+    )
+    if bridge_spec is None or bridge_spec.loader is None:
+        raise RuntimeError("ArcReel native vision transport is unavailable")
+    bridge = importlib.util.module_from_spec(bridge_spec)
+    bridge_spec.loader.exec_module(bridge)
+    vision = bridge.VisionTransport(
+        Path(os.environ["HERMES_HOME"]),
+        base_url=os.environ["ARCREEL_HERMES_EXPECTED_BASE_URL"],
+        model=os.environ["ARCREEL_HERMES_EXPECTED_MODEL"],
+    )
+    vision.install_mcp(importlib.import_module("tools.mcp_tool"))
+    auxiliary = importlib.import_module("agent.auxiliary_client")
+    vision.install_auxiliary(auxiliary)
+    vision.install_compression(importlib.import_module("agent.context_compressor"), auxiliary)
     acp = importlib.import_module("acp")
     entry = importlib.import_module("acp_adapter.entry")
     server = importlib.import_module("acp_adapter.server")
+    bridge.install_acp_text_projection(server, importlib.import_module("acp_adapter.events"))
     sessions = importlib.import_module("acp_adapter.session")
     schema = importlib.import_module("acp.schema")
     tools = importlib.import_module("model_tools")
@@ -123,12 +141,16 @@ def main() -> None:
                 logger=logging.getLogger(__name__), timeout=30, thread_name="arcreel-mcp-discovery"
             )
             agent = super()._make_agent(*args, **kwargs)
+            # Capture the already-installed inference lease, rather than replacing it.
+            vision.install_http(importlib.import_module("httpx"))
             require_local_agent_route(
                 agent,
                 model=os.environ["ARCREEL_HERMES_EXPECTED_MODEL"],
                 base_url=os.environ["ARCREEL_HERMES_EXPECTED_BASE_URL"],
             )
-            configure_project_instructions(agent, os.environ["HERMES_EPHEMERAL_SYSTEM_PROMPT"])
+            configure_project_instructions(
+                agent, os.environ["HERMES_EPHEMERAL_SYSTEM_PROMPT"] + bridge.TRUSTED_VISION_NOTICE
+            )
             restrict_agent_tools(agent, tools.get_tool_definitions)
             return agent
 
@@ -152,6 +174,7 @@ def main() -> None:
                 base_url=os.environ["ARCREEL_HERMES_EXPECTED_BASE_URL"],
             )
             require_project_tool_surface(state.agent)
+            vision.begin_turn(session_id)
             return await super().prompt(prompt, session_id, **kwargs)
 
     entry._setup_logging()

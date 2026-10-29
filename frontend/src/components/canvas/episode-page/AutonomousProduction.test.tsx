@@ -24,12 +24,20 @@ function transport(initial: AutonomousProductionGoal | null = null) {
   const writes: Array<{ url: string; options: RequestInit }> = [];
   const reads: AbortSignal[] = [];
   let rejectNextCreate = false;
+  let conflictNextRetry = false;
   const fetch = vi.fn(async (input: RequestInfo | URL, options: RequestInit = {}) => {
     const url = String(input);
     if (options.method === "POST") {
       writes.push({ url, options });
       if (url.endsWith("/stop")) goal = { ...GOAL, ...goal, state: "stopping" };
-      else {
+      else if (url.endsWith("/retry")) {
+        if (conflictNextRetry) {
+          conflictNextRetry = false;
+          goal = { ...GOAL, ...goal, revision: (goal?.revision ?? 0) + 1 };
+          return new Response(JSON.stringify({ detail: "目标版本已变化" }), { status: 409 });
+        }
+        goal = { ...GOAL, ...goal, state: "pending", revision: (goal?.revision ?? 0) + 1, last_error: null };
+      } else {
         if (rejectNextCreate) {
           rejectNextCreate = false;
           throw new TypeError("connection lost");
@@ -45,6 +53,7 @@ function transport(initial: AutonomousProductionGoal | null = null) {
     fetch, writes, reads,
     setGoal(value: AutonomousProductionGoal | null) { goal = value; },
     rejectNext() { rejectNextCreate = true; },
+    conflictRetry() { conflictNextRetry = true; },
   };
 }
 
@@ -124,6 +133,54 @@ describe("native automatic production entry", () => {
     expect(http.writes[0].url).toBe("/api/v1/projects/project-one/autonomous-production/goal-one/stop");
   });
 
+  it("retries an attention goal with its revision while retaining its identity and Hermes session", async () => {
+    const http = transport({ ...GOAL, state: "attention", revision: 12, session_id: "existing-hermes-session", dispatch_count: 4, last_error: "视觉上下文需要恢复" });
+    render(<AutonomousProduction projectName="project-one" episode={7} />);
+    const dialog = await openEntry();
+    const retry = await within(dialog).findByRole("button", { name: "重试同一目标" });
+    expect(within(dialog).queryByRole("textbox", { name: "制作目标" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "开始自动制作" })).not.toBeInTheDocument();
+    fireEvent.click(retry);
+    const current = await within(dialog).findByRole("region", { name: "当前制作目标" });
+    expect(await within(current).findByText("启动中")).toBeInTheDocument();
+    expect(within(current).getByText(GOAL.objective)).toBeInTheDocument();
+    expect(http.writes).toHaveLength(1);
+    expect(http.writes[0].url).toBe("/api/v1/projects/project-one/autonomous-production/goal-one/retry");
+    expect(JSON.parse(String(http.writes[0].options.body))).toEqual({ expected_revision: 12 });
+    expect(within(dialog).queryByRole("button", { name: "重试同一目标" })).not.toBeInTheDocument();
+    expect(useAssistantStore.getState().requestedSessionOpen).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "打开 Hermes 会话" }));
+    expect(useAssistantStore.getState().requestedSessionOpen).toEqual({ projectName: "project-one", sessionId: "existing-hermes-session" });
+  });
+
+  it("reconciles a retry revision conflict and waits for an explicit retry with the fresh revision", async () => {
+    const http = transport({ ...GOAL, state: "attention", revision: 12, session_id: "existing-hermes-session" });
+    http.conflictRetry();
+    render(<AutonomousProduction projectName="project-one" episode={7} />);
+    const dialog = await openEntry();
+    fireEvent.click(await within(dialog).findByRole("button", { name: "重试同一目标" }));
+    expect(await within(dialog).findByText("目标版本已变化")).toBeInTheDocument();
+    expect(http.writes).toHaveLength(1);
+    const retry = within(dialog).getByRole("button", { name: "重试同一目标" });
+    await waitFor(() => expect(retry).toBeEnabled());
+    fireEvent.click(retry);
+    expect(await within(dialog).findByText("启动中")).toBeInTheDocument();
+    expect(http.writes).toHaveLength(2);
+    expect(http.writes.map(({ options }) => JSON.parse(String(options.body)))).toEqual([{ expected_revision: 12 }, { expected_revision: 13 }]);
+    expect(http.writes.every(({ url }) => url.endsWith("/goal-one/retry"))).toBe(true);
+  });
+
+  it.each(["pending", "running", "waiting", "stopping", "completed", "stopped"] as const)("does not offer same-goal retry for %s", async (state) => {
+    const http = transport({ ...GOAL, state });
+    render(<AutonomousProduction projectName="project-one" episode={7} />);
+    const dialog = await openEntry();
+    await within(dialog).findByRole("region", { name: "当前制作目标" });
+    expect(within(dialog).queryByRole("button", { name: "重试同一目标" })).not.toBeInTheDocument();
+    expect(http.writes).toHaveLength(0);
+    const originalAction = state === "completed" || state === "stopped" ? "开始自动制作" : "停止自动制作";
+    expect(within(dialog).getByRole("button", { name: originalAction })).toBeInTheDocument();
+  });
+
   it("does not create a second goal when another episode already owns the project", async () => {
     const http = transport({ ...GOAL, episode_id: 2, state: "waiting" });
     render(<AutonomousProduction projectName="project-one" episode={7} />);
@@ -153,7 +210,7 @@ describe("native automatic production entry", () => {
     expect(useAssistantStore.getState().currentSessionId).toBe("manual-session");
   });
 
-  it("polls metadata while active, stops polling at terminal state, and cancels on unmount", async () => {
+  it("polls active metadata quickly, terminal metadata slowly, and cancels on unmount", async () => {
     vi.useFakeTimers();
     const http = transport({ ...GOAL, state: "waiting" });
     const view = render(<AutonomousProduction projectName="project-one" episode={7} />);
@@ -162,10 +219,47 @@ describe("native automatic production entry", () => {
     http.setGoal({ ...GOAL, state: "completed" });
     await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
     expect(http.fetch).toHaveBeenCalledTimes(2);
-    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(9999); });
     expect(http.fetch).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(http.fetch).toHaveBeenCalledTimes(3);
     view.unmount();
     expect(http.reads.every((signal) => signal.aborted)).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
+    expect(http.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("discovers a goal started externally after the page initially had no goal", async () => {
+    vi.useFakeTimers();
+    const http = transport(null);
+    render(<AutonomousProduction projectName="project-one" episode={7} />);
+    await act(async () => {});
+    expect(http.fetch).toHaveBeenCalledTimes(1);
+    http.setGoal({ ...GOAL, state: "running", session_id: "externally-started-session" });
+    await act(async () => { await vi.advanceTimersByTimeAsync(9999); });
+    expect(http.fetch).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(screen.getByRole("button", { name: "自动制作 · 制作中" })).toBeInTheDocument();
+    expect(http.fetch).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(http.fetch).toHaveBeenCalledTimes(3);
+    expect(http.writes).toHaveLength(0);
+  });
+
+  it("discovers a background retry of an attention goal and resumes active metadata polling", async () => {
+    vi.useFakeTimers();
+    const http = transport({ ...GOAL, state: "attention", session_id: "same-hermes-session", revision: 12 });
+    render(<AutonomousProduction projectName="project-one" episode={7} />);
+    await act(async () => {});
+    expect(http.fetch).toHaveBeenCalledTimes(1);
+    http.setGoal({ ...GOAL, state: "pending", session_id: "same-hermes-session", revision: 13 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(screen.getByRole("button", { name: "自动制作 · 启动中" })).toBeInTheDocument();
+    expect(http.fetch).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(http.fetch).toHaveBeenCalledTimes(3);
+    expect(http.writes).toHaveLength(0);
+    expect(useAssistantStore.getState().requestedSessionOpen).toBeNull();
   });
 
   it("aborts an old project read and ignores a late response after project switch", async () => {

@@ -8,6 +8,7 @@ Nothing is written and no model is called.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from lib.artifacts.version_manager import VersionManager
 from lib.final_cut.basis import version_snapshot
-from lib.infra.image_utils import compress_image_bytes
+from lib.infra.image_utils import compress_image_bytes, image_pixel_sha256
 from lib.infra.path_safety import try_safe_join
 from lib.script.script_editor import ScriptEditError
 from lib.script.script_models import get_generated_assets
@@ -78,6 +79,17 @@ class InspectedImage:
     prompt: str | None = None
     detail: str | None = None
     jpeg: bytes | None = None
+    source_sha256: str | None = None
+    source_pixel_sha256: str | None = None
+    wire_image_sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ImageSnapshot:
+    jpeg: bytes
+    source_sha256: str
+    source_pixel_sha256: str
+    wire_image_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,10 +147,18 @@ def _available_versions(versions: VersionManager, resource_type: str, resource_i
     ]
 
 
-def _read_image(path: Path) -> tuple[bytes | None, str | None]:
-    """读快照并缩成 JPEG；读不出或解不开时返回原因。"""
+def _read_image(path: Path) -> tuple[_ImageSnapshot | None, str | None]:
+    """Read once so provenance and the returned JPEG describe the same snapshot."""
     try:
-        return compress_image_bytes(path.read_bytes(), max_long_edge=MAX_IMAGE_EDGE, quality=_JPEG_QUALITY), None
+        raw = path.read_bytes()
+        pixel_sha256 = image_pixel_sha256(raw)
+        jpeg = compress_image_bytes(raw, max_long_edge=MAX_IMAGE_EDGE, quality=_JPEG_QUALITY)
+        return _ImageSnapshot(
+            jpeg=jpeg,
+            source_sha256=hashlib.sha256(raw).hexdigest(),
+            source_pixel_sha256=pixel_sha256,
+            wire_image_sha256=hashlib.sha256(jpeg).hexdigest(),
+        ), None
     except OSError as exc:
         return None, f"读取失败：{exc}"
     except ValueError:
@@ -208,16 +228,19 @@ async def inspect_images(
                     continue
                 path, record = found
                 prompt = record.get("prompt")
-                jpeg, detail = _read_image(path)
+                snapshot, detail = _read_image(path)
                 images.append(
                     InspectedImage(
                         id=item_id,
                         version=version,
-                        status="ok" if jpeg is not None else "image_unreadable",
+                        status="ok" if snapshot is not None else "image_unreadable",
                         available_versions=tuple(available),
                         prompt=prompt if isinstance(prompt, str) and prompt else None,
                         detail=detail,
-                        jpeg=jpeg,
+                        jpeg=snapshot.jpeg if snapshot is not None else None,
+                        source_sha256=snapshot.source_sha256 if snapshot is not None else None,
+                        source_pixel_sha256=snapshot.source_pixel_sha256 if snapshot is not None else None,
+                        wire_image_sha256=snapshot.wire_image_sha256 if snapshot is not None else None,
                     )
                 )
             return images
@@ -243,6 +266,10 @@ def inspect_images_projection(value: InspectImagesResult) -> dict[str, Any]:
         if image.jpeg is not None:
             image_number += 1
             entry["image"] = image_number
+            for field in ("source_sha256", "source_pixel_sha256", "wire_image_sha256"):
+                digest = getattr(image, field)
+                if digest is not None:
+                    entry[field] = digest
         if image.prompt is not None:
             entry["prompt"] = image.prompt
         if image.detail is not None:

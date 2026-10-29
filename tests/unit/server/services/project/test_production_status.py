@@ -31,6 +31,16 @@ class QueueFacts:
         return {"items": rows[(page - 1) * page_size : page * page_size], "page_size": page_size, "total": len(rows)}
 
 
+class GoalFacts:
+    def __init__(self, goal):
+        self.goal = goal
+        self.calls = []
+
+    async def get_latest(self, project_name, user_id):
+        self.calls.append((project_name, user_id))
+        return self.goal
+
+
 def _project(tmp_path, *, script=True):
     directory = tmp_path / "projects" / "demo"
     (directory / "scripts").mkdir(parents=True)
@@ -75,6 +85,42 @@ def _project(tmp_path, *, script=True):
             encoding="utf-8",
         )
     return ProjectManager(tmp_path), directory
+
+
+@pytest.mark.parametrize("state", ["running", "attention"])
+async def test_local_goal_status_requires_owned_main_visual_evidence(tmp_path, monkeypatch, state):
+    projects, _ = _project(tmp_path)
+    monkeypatch.setenv("ARCREEL_LOCAL_ONLY", "true")
+    goals = GoalFacts({"episode_id": 2, "state": state, "session_id": "sid"})
+    status = await read_episode_production_status(
+        "demo",
+        2,
+        projects=projects,
+        queue=QueueFacts(),
+        resource_state_path=tmp_path / "resource.json",
+        goal_store=goals,
+    )
+    assert goals.calls == [("demo", DEFAULT_USER_ID)]
+    assert status["visual_observation"]["enabled"] is True
+    assert status["visual_observation"]["ready"] is False
+    assert status["visual_observation"]["action"] == "inspect_images"
+    assert status["goal_complete_technical"] is False
+
+
+async def test_manual_status_preserves_delivery_predicate_without_goal_lookup(tmp_path, monkeypatch):
+    projects, _ = _project(tmp_path)
+    monkeypatch.setenv("ARCREEL_LOCAL_ONLY", "false")
+    goals = GoalFacts({"episode_id": 2, "state": "running", "session_id": "sid"})
+    status = await read_episode_production_status(
+        "demo",
+        2,
+        projects=projects,
+        queue=QueueFacts(),
+        resource_state_path=tmp_path / "resource.json",
+        goal_store=goals,
+    )
+    assert goals.calls == []
+    assert status["visual_observation"]["enabled"] is False
 
 
 async def test_read_status_reports_exact_wav_and_all_native_writer_types_without_mutating(tmp_path):

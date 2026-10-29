@@ -1,6 +1,7 @@
 import type enWorkflow from "@/i18n/en/workflow";
 
 export default {
+  "autonomy_retry": "Thử lại cùng mục tiêu",
   "autonomy_active_title": "Sản xuất tự động · {{state}}",
   "autonomy_title": "Sản xuất tự động",
   "autonomy_default_goal": "Tự động tạo bản phim hoàn chỉnh có lời dẫn và phụ đề từ nội dung hiện có của tập này.",

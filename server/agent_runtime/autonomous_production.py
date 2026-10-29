@@ -77,6 +77,7 @@ def compact_facts(facts: dict[str, Any]) -> dict[str, Any]:
         "script_state": facts.get("script_state"),
         "preparation": facts.get("preparation", {}),
         "workflow": facts.get("workflow", {}),
+        "visual_observation": facts.get("visual_observation", {}),
         "assets": [
             {
                 key: asset.get(key)
@@ -158,8 +159,10 @@ def continuation_message(goal: dict[str, Any], facts: dict[str, Any], mode: str)
         "不要反复轮询模型或自行启动后台脚本。所有已有提交先对账，不重放旧工具调用。"
         "最终目标是指定集的 current 成片，旁白项目需完整旁白和烧录字幕，随后 finish_local_session 恢复模型。"
         "不要把一次 end_turn、视频片段齐备或创建时间线当成最终交付。没有实际听审或连续播放证据时不宣称已通过。"
+        "看图以 inspect_images 经本地视觉通道实际送入的图片为据；历史 MEDIA 路径、文本占位或模型自述都不是视觉证据。"
         + (
             "\n这是恢复对账轮。先读取当前项目、任务和正式产物；上一轮投递可能已执行，禁止重放上一轮动作。"
+            "使用当前视觉通道重新观察已有首图和尾图候选后再进入视频阶段，保留已生成图片，不因恢复而重生成。"
             if mode == "reconcile"
             else ""
         )
@@ -232,6 +235,11 @@ class AutonomousProductionService:
 
     async def stop(self, run_id: str, user_id: str) -> dict[str, Any]:
         result = await self.store.stop(run_id, user_id)
+        self.notify()
+        return result
+
+    async def retry(self, run_id: str, user_id: str, expected_revision: int) -> dict[str, Any]:
+        result = await self.store.retry(run_id, user_id, expected_revision)
         self.notify()
         return result
 
@@ -361,7 +369,7 @@ class AutonomousProductionService:
                 )
                 # A missing entry never proves that a previous prompt was not executed.
                 # Every recovery is a new state-reconciliation turn, never a replay.
-                if entry is None or pending.get("phase") == "dispatching":
+                if entry is None or pending.get("phase") in {"dispatching", "reconcile_required"}:
                     mode = "reconcile"
             session_id = goal.get("session_id")
             if session_id:
@@ -380,6 +388,8 @@ class AutonomousProductionService:
                 "created_at": datetime.now(UTC).isoformat(),
                 "message": continuation_message(goal, facts, mode),
             }
+            if "retry_of_revision" in pending:
+                delivery["retry_of_revision"] = pending["retry_of_revision"]
             goal = await self._update(
                 goal,
                 state="running",

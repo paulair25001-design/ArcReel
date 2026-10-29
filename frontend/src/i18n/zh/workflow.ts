@@ -1,6 +1,7 @@
 import type enWorkflow from "@/i18n/en/workflow";
 
 export default {
+  "autonomy_retry": "重试同一目标",
   "autonomy_active_title": "自动制作 · {{state}}",
   "autonomy_title": "自动制作",
   "autonomy_default_goal": "按本集现有内容自动制作至带旁白字幕的最终成片",

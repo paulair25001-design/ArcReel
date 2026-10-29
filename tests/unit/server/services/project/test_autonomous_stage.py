@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 
 from lib.db.base import DEFAULT_USER_ID
 from server.agent_toolset.declaration import Exempt, ToolDeclaration, invoke_declaration
+from server.services.project.autonomous_stage import production_tool_admission
 from server.tool_runtime import CallerContext, ProjectScope, ToolOutcome
 
 
@@ -165,3 +167,110 @@ async def test_goal_closed_during_queue_read_refuses_the_unaccepted_write(tmp_pa
     outcome = await _invoke(tmp_path, "generate_storyboards", handler, Queue(), ClosingGoal())
     assert outcome.value is None
     assert outcome.problem.code == "autonomous_goal_changed"
+
+
+@pytest.mark.parametrize("name", ["generate_videos", "render_final_cut"])
+@pytest.mark.parametrize("delivered", [False, True])
+async def test_video_and_render_require_actual_current_frame_observations(tmp_path, name, delivered):
+    class ScopedGoal:
+        async def get_latest(self, project, user):
+            return {"id": "goal", "state": "running", "episode_id": 2, "session_id": "native-sid"}
+
+    reads = []
+    missing = [{"unit_id": "E2S01", "role": "end", "source_pixel_sha256": "unobserved-tail"}]
+    requests = [{"resource_type": "storyboard", "ids": ["E2S01"], "version": 2}]
+
+    async def visual(project, episode, session, **kwargs):
+        reads.append((project, episode, session, kwargs["user_id"]))
+        return {"ready": delivered, "missing": missing, "inspection_requests": requests, "proof_digest": "proof"}
+
+    services = SimpleNamespace(queue=Queue(), projects=object())
+    writes = []
+    async with production_tool_admission(
+        name,
+        ProjectScope("demo", tmp_path),
+        CallerContext(DEFAULT_USER_ID, "mcp"),
+        services,
+        goal_store=ScopedGoal(),
+        visual_reader=visual,
+    ) as problem:
+        if problem is None:
+            writes.append("native handler admitted")
+        else:
+            assert problem.code == "autonomous_visual_observation_required"
+            assert problem.action == "inspect_images"
+            assert problem.params["missing"] == missing
+            assert problem.params["inspection_requests"] == requests
+    assert writes == (["native handler admitted"] if delivered else [])
+    assert reads == [("demo", 2, "native-sid", DEFAULT_USER_ID)]
+
+
+async def test_manual_video_does_not_consult_autonomous_visual_proofs(tmp_path):
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("Manual behavior must remain unchanged")
+
+    async with production_tool_admission(
+        "generate_videos",
+        ProjectScope("demo", tmp_path),
+        CallerContext(DEFAULT_USER_ID, "mcp"),
+        SimpleNamespace(queue=Queue()),
+        goal_store=Goal(None),
+        visual_reader=unexpected,
+    ) as problem:
+        assert problem is None
+
+
+async def test_stop_during_visual_check_refuses_the_previously_ready_write(tmp_path):
+    class StoppableGoal:
+        state = "running"
+
+        async def get_latest(self, *args):
+            return {"id": "goal", "state": self.state, "episode_id": 2, "session_id": "native-sid"}
+
+    goal = StoppableGoal()
+
+    async def visual(*args, **kwargs):
+        goal.state = "stopping"
+        return {"ready": True}
+
+    async with production_tool_admission(
+        "render_final_cut",
+        ProjectScope("demo", tmp_path),
+        CallerContext(DEFAULT_USER_ID, "mcp"),
+        SimpleNamespace(queue=Queue(), projects=object()),
+        goal_store=goal,
+        visual_reader=visual,
+    ) as problem:
+        assert problem.code == "autonomous_goal_changed"
+
+
+async def test_observed_episode_two_cannot_authorize_episode_one_video(tmp_path):
+    class EpisodeTwoGoal:
+        async def get_latest(self, *args):
+            return {"id": "goal", "state": "running", "episode_id": 2, "session_id": "native-sid"}
+
+    projects = SimpleNamespace(
+        load_project=lambda _: {
+            "episodes": [
+                {"episode": 1, "script_file": "scripts/episode_1.json"},
+                {"episode": 2, "script_file": "scripts/episode_2.json"},
+            ]
+        },
+        normalize_script_filename=lambda path: Path(path).name,
+    )
+
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("Another episode cannot borrow visual proof")
+
+    async with production_tool_admission(
+        "generate_videos",
+        ProjectScope("demo", tmp_path),
+        CallerContext(DEFAULT_USER_ID, "mcp"),
+        SimpleNamespace(queue=Queue(), projects=projects),
+        goal_store=EpisodeTwoGoal(),
+        visual_reader=unexpected,
+        arguments={"script": "episode_1.json"},
+    ) as problem:
+        assert problem.code == "autonomous_episode_mismatch"
+        assert problem.params["authorized_episode"] == 2
+        assert problem.params["requested_episode"] == 1

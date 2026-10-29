@@ -22,6 +22,7 @@ import { uid } from "@/utils/id";
 
 const ACTIVE = new Set(["pending", "running", "waiting", "stopping"]);
 const POLL_MILLISECONDS = 2500;
+const IDLE_POLL_MILLISECONDS = 10000;
 
 function active(goal: AutonomousProductionGoal | null): goal is AutonomousProductionGoal {
   return goal !== null && ACTIVE.has(goal.state);
@@ -68,7 +69,7 @@ function ProductionEntry({ projectName, episode }: { projectName: string; episod
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);
-          if (active(lastGoal)) timer = setTimeout(() => void read(), POLL_MILLISECONDS);
+          timer = setTimeout(() => void read(), active(lastGoal) ? POLL_MILLISECONDS : IDLE_POLL_MILLISECONDS);
         }
       }
     }
@@ -82,6 +83,7 @@ function ProductionEntry({ projectName, episode }: { projectName: string; episod
 
   const visibleGoal = goal && (goal.episode_id === episode || active(goal)) ? goal : null;
   const isActive = active(visibleGoal);
+  const canRetry = visibleGoal?.state === "attention";
 
   const start = async () => {
     const text = objective.trim();
@@ -119,6 +121,24 @@ function ProductionEntry({ projectName, episode }: { projectName: string; episod
       setActionError(errMsg(error));
     } finally {
       setBusy(false);
+      setRefresh((value) => value + 1);
+    }
+  };
+
+  const retry = async () => {
+    if (!visibleGoal || visibleGoal.state !== "attention" || busy) return;
+    readAbort.current?.abort();
+    setBusy(true);
+    setActionError(null);
+    try {
+      const response = await AutonomyAPI.retry(projectName, visibleGoal.id, visibleGoal.revision);
+      knownGoal.current = response.goal;
+      setGoal(response.goal);
+    } catch (error) {
+      setActionError(errMsg(error));
+    } finally {
+      setBusy(false);
+      setLoading(true);
       setRefresh((value) => value + 1);
     }
   };
@@ -164,7 +184,7 @@ function ProductionEntry({ projectName, episode }: { projectName: string; episod
               {visibleGoal.last_error && <details className="text-sm wrap-break-word"><summary>{t("workflow:technical_detail")}</summary><p className="whitespace-pre-wrap">{visibleGoal.last_error}</p></details>}
               {visibleGoal.session_id && <Button variant="outline" size="sm" onClick={openSession}>{t("workflow:autonomy_open_session")}</Button>}
             </section>}
-            {!isActive && <div className="space-y-2">
+            {!isActive && !canRetry && <div className="space-y-2">
               <Label htmlFor={inputId}>{t("workflow:autonomy_objective")}</Label>
               <Textarea id={inputId} value={objective} onChange={(event) => setObjective(event.target.value)} disabled={busy} />
               <p className="text-xs text-muted-foreground">{t("workflow:autonomy_authorization")}</p>
@@ -177,6 +197,9 @@ function ProductionEntry({ projectName, episode }: { projectName: string; episod
             {isActive ? <Button variant="outline" disabled={busy || visibleGoal.state === "stopping"} onClick={() => void stop()}>
               {busy && <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />}
               {t("workflow:autonomy_stop")}
+            </Button> : canRetry ? <Button disabled={busy || loading || Boolean(readError)} onClick={() => void retry()}>
+              {busy && <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />}
+              {t("workflow:autonomy_retry")}
             </Button> : <Button disabled={busy || loading || Boolean(readError) || !objective.trim()} onClick={() => void start()}>
               {busy && <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />}
               {t("workflow:autonomy_start")}

@@ -1,4 +1,5 @@
 export default {
+  "autonomy_retry": "Retry this goal",
   "autonomy_active_title": "Automatic production · {{state}}",
   "autonomy_title": "Automatic production",
   "autonomy_default_goal": "Automatically produce a final cut with narration and subtitles from this episode's existing content.",

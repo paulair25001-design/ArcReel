@@ -1304,6 +1304,18 @@ async def execute_video_task(
 
             async def _checkpoint_before_submit() -> Mapping[str, object]:
                 await asyncio.to_thread(assert_current_artifact_input_claims_usable, project_path, formal_input_claims)
+                from server.services.project.visual_observation import assert_frozen_video_frames_observed
+
+                await assert_frozen_video_frames_observed(
+                    project_name,
+                    artifact_episode,
+                    resource_id,
+                    first=provider_start_image,
+                    tail=provider_end_image,
+                    projects=get_project_manager(),
+                    user_id=user_id,
+                )
+                await asyncio.to_thread(assert_current_artifact_input_claims_usable, project_path, formal_input_claims)
                 # 检查点要读版本记录（版本管理锁）并绑定摘要，放进工作线程构造。
                 checkpoint = await asyncio.to_thread(_build_checkpoint)
                 await get_generation_queue().persist_execution_checkpoint(

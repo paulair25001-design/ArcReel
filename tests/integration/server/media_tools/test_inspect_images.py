@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ import pytest
 from PIL import Image
 
 from lib.artifacts.version_manager import VersionManager
+from lib.infra.image_utils import image_pixel_sha256
 from lib.project.project_manager import ProjectManager
 from server.agent_toolset.envelope import ToolEnvelope, encode_outcome
 from server.agent_toolset.image_review import INSPECT_IMAGES
@@ -64,6 +66,20 @@ def _picture(jpeg: bytes) -> tuple[str, tuple[int, int]]:
     return color, image.size
 
 
+def _provenance(source: bytes, jpeg: bytes) -> dict[str, str]:
+    return {
+        "source_sha256": hashlib.sha256(source).hexdigest(),
+        "source_pixel_sha256": image_pixel_sha256(source),
+        "wire_image_sha256": hashlib.sha256(jpeg).hexdigest(),
+    }
+
+
+def _snapshot_path(ctx: ToolHarness, resource_type: str, resource_id: str, version: int) -> Path:
+    records = VersionManager(ctx.project_path).get_versions(resource_type, resource_id)["versions"]
+    record = next(row for row in records if row["version"] == version)
+    return VersionManager.resolve_snapshot_path(ctx.project_path, resource_type, record["file"])
+
+
 async def test_current_asset_sheets_come_back_as_image_blocks_in_request_order(tmp_path: Path) -> None:
     ctx = _harness(tmp_path)
     _install(ctx, "characters", "阿岚", "red")
@@ -82,6 +98,7 @@ async def test_current_asset_sheets_come_back_as_image_blocks_in_request_order(t
             "status": "ok",
             "image": 1,
             "prompt": "blue 提示词",
+            **_provenance(_snapshot_path(ctx, "characters", "阿岚", 2).read_bytes(), envelope.images[0].data),
         }
     ]
     assert [image.mime_type for image in envelope.images] == ["image/jpeg"]
@@ -135,6 +152,8 @@ async def test_items_without_a_viewable_image_report_their_status_without_an_ima
     assert entries[0]["version"] is None
     assert entries[0]["available_versions"] == []
     assert entries[1]["detail"]
+    for entry in entries[:2]:
+        assert not {"source_sha256", "source_pixel_sha256", "wire_image_sha256"} & entry.keys()
     assert len(envelope.images) == 1
     assert _picture(envelope.images[0].data)[0] == "red"
     assert "E2S01" in envelope.texts[0]
@@ -227,7 +246,14 @@ async def test_current_images_without_history_remain_viewable_and_read_only(tmp_
 
     assert outcome.problem is None
     assert envelope.structured["inspect_images"]["images"] == [
-        {"id": item_id, "version": None, "available_versions": [], "status": "ok", "image": 1}
+        {
+            "id": item_id,
+            "version": None,
+            "available_versions": [],
+            "status": "ok",
+            "image": 1,
+            **_provenance(before[Path(pointer)], envelope.images[0].data),
+        }
     ]
     assert _picture(envelope.images[0].data) == ("red", (160, 90))
     assert problem_of(explicit).code == "version_not_found"
@@ -253,3 +279,35 @@ async def test_untracked_images_require_a_registered_path_inside_the_project(
     assert outcome.problem is None
     assert envelope.structured["inspect_images"]["images"][0]["status"] == "image_missing"
     assert envelope.images == ()
+
+
+async def test_provenance_and_wire_image_use_one_file_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _harness(tmp_path)
+    _install(ctx, "storyboards", "E1S01", "red")
+    snapshot_path = _snapshot_path(ctx, "storyboards", "E1S01", 1)
+    red = snapshot_path.read_bytes()
+    blue_buffer = io.BytesIO()
+    Image.new("RGB", (160, 90), "blue").save(blue_buffer, format="PNG")
+    blue = blue_buffer.getvalue()
+    original_read = Path.read_bytes
+    reads = 0
+
+    def replace_after_read(path: Path) -> bytes:
+        nonlocal reads
+        content = original_read(path)
+        if path == snapshot_path:
+            reads += 1
+            path.write_bytes(blue)
+        return content
+
+    monkeypatch.setattr(Path, "read_bytes", replace_after_read)
+    outcome, envelope = await _inspect(ctx, {"resource_type": "storyboard", "ids": ["E1S01"]})
+
+    assert outcome.problem is None
+    entry = envelope.structured["inspect_images"]["images"][0]
+    assert {key: entry[key] for key in _provenance(red, envelope.images[0].data)} == _provenance(
+        red, envelope.images[0].data
+    )
+    assert _picture(envelope.images[0].data)[0] == "red"
+    assert reads == 1
+    assert original_read(snapshot_path) == blue

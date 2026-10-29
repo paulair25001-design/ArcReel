@@ -29,6 +29,22 @@ function localApi(goal: typeof GOAL | null): ApiOverrides {
 
 defineRegionScenarios("原生自动制作", [
   {
+    name: "需要处理时只提供同目标重试，保留原目标并隐藏新建输入",
+    path: PATH,
+    api: localApi({ ...GOAL, state: "attention", revision: 12 }),
+    ready: async (page) => { await page.getByRole("button", { name: "自动制作", exact: true }).waitFor(); },
+    act: async (page) => {
+      await clearAgentOverlay(page);
+      await page.getByRole("button", { name: "自动制作", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "自动制作", exact: true });
+      await expect(dialog.getByText("需要处理", { exact: true })).toBeVisible();
+      await expect(dialog.getByRole("button", { name: "重试同一目标" })).toBeEnabled();
+      await expect(dialog.getByRole("button", { name: "重试同一目标" })).toBeInViewport();
+      await expect(dialog.getByRole("textbox", { name: "制作目标", exact: true })).toHaveCount(0);
+      await expect(dialog.getByRole("button", { name: "开始自动制作" })).toHaveCount(0);
+    },
+  },
+  {
     name: "当前集只授权一次目标，长目标仍可编辑并能看到启动操作",
     path: PATH,
     api: localApi(null),

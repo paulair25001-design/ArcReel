@@ -197,3 +197,72 @@ async def test_stop_racing_driver_update_cannot_leave_running(file_db_factory):
     )
     assert any(isinstance(result, dict) and result["state"] == "stopping" for result in results)
     assert (await store.get(goal["id"], "default"))["state"] == "stopping"
+
+
+async def test_attention_retry_preserves_identity_and_requests_fresh_reconciliation(goal_store):
+    store, _, _ = goal_store
+    goal = await create(store)
+    await store.claim(goal["id"], "driver", 30, user_id="default")
+    attention = await store.update(
+        goal["id"],
+        "driver",
+        {
+            "state": "attention",
+            "session_id": "original-hermes",
+            "dispatch_count": 7,
+            "unchanged_turns": 3,
+            "last_progress_digest": "old",
+            "last_error": "fixed_problem",
+        },
+        user_id="default",
+    )
+    retried = await store.retry(goal["id"], "default", attention["revision"])
+    assert retried["id"] == goal["id"]
+    assert retried["session_id"] == "original-hermes"
+    assert retried["dispatch_count"] == 7
+    assert retried["state"] == "pending"
+    assert retried["unchanged_turns"] == 0
+    assert retried["last_progress_digest"] is None
+    assert retried["pending_delivery"]["phase"] == "reconcile_required"
+    assert await store.retry(goal["id"], "default", attention["revision"]) == retried
+    assert await store.claim(goal["id"], "next-driver", 30, user_id="default") is not None
+
+
+@pytest.mark.parametrize("state", ["pending", "stopping", "stopped", "completed"])
+async def test_retry_cannot_resume_user_stop_or_completed_goal(goal_store, state):
+    store, _, _ = goal_store
+    goal = await create(store)
+    await store.claim(goal["id"], "driver", 30, user_id="default")
+    row = await store.update(goal["id"], "driver", {"state": state}, user_id="default")
+    with pytest.raises(ValueError, match="attention"):
+        await store.retry(goal["id"], "default", row["revision"])
+    assert (await store.get(goal["id"], "default"))["state"] == state
+
+
+async def test_retry_rejects_foreign_user_stale_revision_and_other_active_goal(goal_store):
+    store, _, _ = goal_store
+    goal = await create(store)
+    await store.claim(goal["id"], "driver", 30, user_id="default")
+    row = await store.update(goal["id"], "driver", {"state": "attention"}, user_id="default")
+    with pytest.raises(ValueError, match="not found"):
+        await store.retry(goal["id"], "foreign", row["revision"])
+    with pytest.raises(ValueError, match="attention"):
+        await store.retry(goal["id"], "default", row["revision"] - 1)
+    other = await create(store, client_key="another-authorization")
+    with pytest.raises(ValueError, match="active"):
+        await store.retry(goal["id"], "default", row["revision"])
+    assert (await store.get(goal["id"], "default"))["state"] == "attention"
+    assert (await store.get(other["id"], "default"))["state"] == "pending"
+
+
+async def test_concurrent_retry_is_one_reconciliation(file_db_factory):
+    store = AutonomyStore(session_factory=file_db_factory, clock=Clock())
+    goal = await create(store)
+    await store.claim(goal["id"], "driver", 30, user_id="default")
+    row = await store.update(goal["id"], "driver", {"state": "attention"}, user_id="default")
+    retried = await asyncio.gather(
+        store.retry(goal["id"], "default", row["revision"]),
+        store.retry(goal["id"], "default", row["revision"]),
+    )
+    assert retried[0]["revision"] == retried[1]["revision"]
+    assert retried[0]["state"] == "pending"

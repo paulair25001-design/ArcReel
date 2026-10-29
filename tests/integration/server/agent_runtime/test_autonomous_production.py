@@ -272,3 +272,21 @@ async def test_work_resumed_during_facts_probe_prevents_premature_completion(rig
     assert (await rig.store.get(rig.goal["id"], "default"))["state"] != "completed"
     assert len(rig.assistant.calls) == 1
     assert rig.finished == []
+
+
+async def test_explicit_retry_keeps_same_session_and_never_replays_old_tool_commands(rig):
+    for _ in range(4):
+        await rig.service.advance(rig.goal)
+    attention = await rig.store.get(rig.goal["id"], "default")
+    assert attention["state"] == "attention"
+    sid = attention["session_id"]
+    await rig.service.retry(attention["id"], "default", attention["revision"])
+    await rig.service.advance(rig.goal)
+    call = rig.assistant.calls[-1]
+    assert call["session_id"] == sid
+    assert json.loads(call["content"].splitlines()[1])["mode"] == "reconcile"
+    active = await rig.store.get(rig.goal["id"], "default")
+    assert active["dispatch_count"] == attention["dispatch_count"] + 1
+    assert active["unchanged_turns"] == 0
+    duplicate = await rig.store.retry(attention["id"], "default", attention["revision"])
+    assert duplicate["dispatch_count"] == active["dispatch_count"]

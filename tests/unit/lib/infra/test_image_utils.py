@@ -3,13 +3,46 @@
 
 from __future__ import annotations
 
+import hashlib
 from io import BytesIO
 
 import pytest
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 from lib.infra import image_utils
-from lib.infra.image_utils import compress_image_bytes, normalize_storyboard_upload, normalize_uploaded_image
+from lib.infra.image_utils import (
+    compress_image_bytes,
+    image_pixel_sha256,
+    normalize_storyboard_upload,
+    normalize_uploaded_image,
+)
+
+
+def test_pixel_digest_survives_png_reencoding_and_metadata_changes() -> None:
+    image = Image.new("RGB", (3, 2), "red")
+    first, second = BytesIO(), BytesIO()
+    image.save(first, format="PNG", compress_level=0)
+    metadata = PngImagePlugin.PngInfo()
+    metadata.add_text("description", "a separately encoded snapshot")
+    image.save(second, format="PNG", compress_level=9, pnginfo=metadata)
+
+    assert first.getvalue() != second.getvalue()
+    assert image_pixel_sha256(first.getvalue()) == image_pixel_sha256(second.getvalue())
+    assert image_pixel_sha256(first.getvalue()) == hashlib.sha256(b"3x2\0" + b"\xff\0\0" * 6).hexdigest()
+
+
+def test_pixel_digest_distinguishes_dimensions_with_the_same_rgb_byte_sequence() -> None:
+    horizontal, vertical = BytesIO(), BytesIO()
+    Image.new("RGB", (6, 1), "red").save(horizontal, format="PNG")
+    Image.new("RGBA", (2, 3), (255, 0, 0, 255)).save(vertical, format="PNG")
+
+    assert image_pixel_sha256(horizontal.getvalue()) != image_pixel_sha256(vertical.getvalue())
+
+
+@pytest.mark.parametrize("content", [b"", b"not an image"])
+def test_pixel_digest_rejects_undecodable_images(content: bytes) -> None:
+    with pytest.raises(ValueError, match="Invalid image"):
+        image_pixel_sha256(content)
 
 
 class TestCompressImageBytes:

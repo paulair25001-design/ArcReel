@@ -6,6 +6,7 @@ Used by WebUI upload endpoints to validate, compress, and normalize uploaded ima
 
 from __future__ import annotations
 
+import hashlib
 from io import BytesIO
 
 from PIL import Image, ImageOps
@@ -125,6 +126,25 @@ def validate_image_bytes(content: bytes) -> None:
             img.verify()
     except Exception as e:
         raise ValueError("Invalid image") from e
+
+
+def image_pixel_sha256(content: bytes) -> str:
+    """Hash decoded RGB dimensions and pixels, independent of image encoding.
+
+    The canonical input is ASCII ``widthxheight\0`` followed by RGB bytes in
+    row-major order. EXIF metadata is not applied; source pixels are hashed
+    before any inspection downscaling or JPEG encoding.
+    """
+    try:
+        with Image.open(BytesIO(content)) as image:
+            _ensure_pixel_budget(image.size)
+            with image.convert("RGB") as rgb:
+                dimensions = f"{rgb.width}x{rgb.height}\0".encode("ascii")
+                return hashlib.sha256(dimensions + rgb.tobytes()).hexdigest()
+    except ImagePixelLimitError:
+        raise
+    except Exception as exc:
+        raise ValueError("Invalid image") from exc
 
 
 def compress_image_bytes(
