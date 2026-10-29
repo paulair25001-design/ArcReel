@@ -122,6 +122,21 @@ async def test_first_delivery_binds_real_session_before_inference_and_keeps_priv
     assert "lease_owner" not in public_goal(result)
 
 
+async def test_drama_continuation_preserves_native_speech_owner_and_actual_video_audio_facts(rig):
+    unit = rig.facts["units"][0]
+    unit["speech"] = {"unit_id": "E2S01", "allowed": True, "mode": "character_speech", "problems": []}
+    unit["audio"] = {"status": "missing", "actual_seconds": None}
+    unit["video"] = {"status": "current", "provider_audio": True, "has_audio": True}
+    await rig.service.advance(rig.goal)
+    context = json.loads(rig.assistant.calls[0]["content"].splitlines()[1])
+    actual = context["facts"]["units"][0]
+    assert actual["speech"] == unit["speech"]
+    assert actual["video"]["provider_audio"] is True
+    assert actual["video"]["has_audio"] is True
+    assert actual["audio"]["status"] == "missing"
+    assert context["facts"]["goal_complete_technical"] is False
+
+
 @pytest.mark.parametrize("type_name", ["tts", "image_edit", "render_final_cut"])
 async def test_any_native_writer_waits_without_a_model_turn(rig, type_name):
     rig.queue.stats.update(running=1)

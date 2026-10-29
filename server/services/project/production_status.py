@@ -14,7 +14,7 @@ import wave
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 from urllib.parse import quote
 
 from lib.artifacts.artifact_currency import active_artifact_currency_resolver
@@ -25,7 +25,7 @@ from lib.edit_timeline.service import EditTimelineService
 from lib.edit_timeline.sources import load_episode_script_units
 from lib.edit_timeline.store import EditTimelineStore
 from lib.episode.episode_paths import episode_source_relpath
-from lib.final_cut.basis import BURNED_SUBTITLES, WITH_NARRATION
+from lib.final_cut.basis import BURNED_SUBTITLES, WITH_NARRATION, WITHOUT_NARRATION, current_provider_audio
 from lib.final_cut.service import FinalCutService
 from lib.generation.generation_queue import GenerationQueue, get_generation_queue
 from lib.generation.generation_result import decode_generation_problem, provider_checkpoint_from_task
@@ -49,6 +49,7 @@ from lib.script.draft_quarantine import (
 from lib.script.script_editor import resolve_items
 from lib.script.script_models import get_generated_assets
 from lib.script.storyboard_sequence import get_storyboard_items
+from lib.speech.speech_composition import SpeechMode, admit_script_unit
 from lib.workflow.workflow_state import WorkflowStateService
 from server.services.project.visual_observation import read_visual_observation_status
 
@@ -266,6 +267,7 @@ def _read_episode(
                 "unit_id": unit.unit_id,
                 "text": unit.subtitle_text,
                 "declared_seconds": unit.scripted_duration_us / 1_000_000,
+                "speech": admit_script_unit(kind, item).to_dict(),
                 "audio": _media_facts(
                     **common,
                     resource_type="audio",
@@ -287,7 +289,8 @@ def _read_episode(
                     key=ArtifactKey.episode_video(episode_id, unit.unit_id),
                     path=assets.get("video_clip"),
                     audio=False,
-                ),
+                )
+                | {"provider_audio": current_provider_audio(versions, video_type, unit.unit_id), "has_audio": False},
             }
         )
     documents = EditTimelineStore(projects, project_name).list_documents(episode_id, strict=True)
@@ -332,13 +335,30 @@ def _read_episode(
     }, documents
 
 
+def _speech_mode(unit: dict[str, Any]) -> SpeechMode | None:
+    """Legacy callers describe narrator units; formal projections carry native admission."""
+    if "speech" not in unit:
+        return SpeechMode.NARRATOR_VOICEOVER
+    speech = unit["speech"]
+    if not isinstance(speech, dict) or speech.get("allowed") is not True:
+        return None
+    try:
+        return SpeechMode(speech.get("mode"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _finite_number(value: Any) -> TypeGuard[int | float]:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
 def narration_delivery_complete(units: list[dict[str, Any]], timeline: dict[str, Any]) -> bool:
-    """A current render may retain warnings; an autonomous delivery may not lose speech."""
+    """Check native speech delivery, without claiming dialogue or listening accuracy."""
     readout = timeline.get("readout")
     if not isinstance(readout, dict):
         return False
     clips = readout.get("clips", [])
-    if not clips or any(clip.get("source_volume") != 0 for clip in clips):
+    if not clips or any(clip.get("status") != "ready" for clip in clips):
         return False
     if any(
         issue.get("code") in {"narration_overrun", "narration_source_collision", "narration_missing"}
@@ -346,14 +366,41 @@ def narration_delivery_complete(units: list[dict[str, Any]], timeline: dict[str,
     ):
         return False
     total = readout.get("duration")
-    if not isinstance(total, (int, float)) or total <= 0:
+    if not _finite_number(total) or total <= 0:
         return False
     for unit in units:
+        mode = _speech_mode(unit)
+        unit_clips = [clip for clip in clips if clip.get("unit_id") == unit["unit_id"]]
+        if mode is None or not unit_clips:
+            return False
+        if any(
+            not _finite_number(clip.get("source_volume"))
+            or clip["source_volume"] < 0
+            or not _finite_number(clip.get("duration"))
+            or clip["duration"] <= 0
+            for clip in unit_clips
+        ):
+            return False
+        if mode is SpeechMode.CHARACTER_SPEECH:
+            video = unit.get("video", {})
+            if (
+                video.get("status") not in {"current", "stale"}
+                or video.get("present") is not True
+                or video.get("provider_audio") is not True
+                or video.get("has_audio") is not True
+                or any(clip["source_volume"] <= 0 for clip in unit_clips)
+            ):
+                return False
+            continue
+        if mode is SpeechMode.SILENT:
+            continue
+        if any(clip["source_volume"] != 0 for clip in unit_clips):
+            return False
         audio = unit.get("audio", {})
         duration = audio.get("actual_seconds")
-        if audio.get("status") != "current" or not isinstance(duration, (int, float)) or duration <= 0:
+        if audio.get("status") != "current" or not _finite_number(duration) or duration <= 0:
             return False
-        carriers = [clip for clip in clips if clip.get("unit_id") == unit["unit_id"] and clip.get("carries_narration")]
+        carriers = [clip for clip in unit_clips if clip.get("carries_narration")]
         if len(carriers) != 1:
             return False
         carrier = carriers[0]
@@ -363,22 +410,26 @@ def narration_delivery_complete(units: list[dict[str, Any]], timeline: dict[str,
         start, end = narration.get("start"), narration.get("end")
         clip_start, clip_duration = carrier.get("start"), carrier.get("duration")
         if (
-            not isinstance(start, (int, float))
-            or not isinstance(end, (int, float))
-            or not isinstance(clip_start, (int, float))
-            or not isinstance(clip_duration, (int, float))
+            not _finite_number(start)
+            or not _finite_number(end)
+            or not _finite_number(clip_start)
+            or not _finite_number(clip_duration)
         ):
             return False
-        if not all(math.isfinite(value) for value in (start, end, clip_start, clip_duration, duration, total)):
-            return False
-        if abs((end - start) - duration) > 0.001 or end > total + 0.001 or end > clip_start + clip_duration + 0.001:
+        if (
+            start < clip_start - 0.001
+            or abs((end - start) - duration) > 0.001
+            or end > total + 0.001
+            or end > clip_start + clip_duration + 0.001
+        ):
             return False
     return bool(units)
 
 
 def episode_final_cut_complete(episode_id: int, units: list[dict[str, Any]], timelines: list[dict[str, Any]]) -> bool:
-    """Require the specified episode's complete ordered units and the exact delivery variant."""
+    """Require ordered native units and a current subtitled variant that retains their speech."""
     unit_ids = [unit["unit_id"] for unit in units]
+    needs_narration = any(_speech_mode(unit) is SpeechMode.NARRATOR_VOICEOVER for unit in units)
     for timeline in timelines:
         final = timeline.get("final_cut", {})
         if (
@@ -388,7 +439,7 @@ def episode_final_cut_complete(episode_id: int, units: list[dict[str, Any]], tim
             and final.get("episode") == episode_id
             and final.get("timeline_id") == timeline.get("timeline_id")
             and final.get("status") == "current"
-            and final.get("narration") == WITH_NARRATION
+            and final.get("narration") in ({WITH_NARRATION} if needs_narration else {WITH_NARRATION, WITHOUT_NARRATION})
             and final.get("subtitles") == BURNED_SUBTITLES
             and final.get("version") is not None
             and narration_delivery_complete(units, timeline)
@@ -466,7 +517,7 @@ async def read_episode_production_status(
     media_probe: Callable[[Path], Awaitable[MediaProbe]] = probe_media,
     goal_store: Any = None,
 ) -> dict[str, Any]:
-    """Only a current narrated, subtitled final cut covering this episode completes it."""
+    """Only a current subtitled final cut delivering this episode's native speech completes it."""
     projects = projects or await asyncio.to_thread(get_project_manager)
     queue = queue or get_generation_queue()
     state_path = resource_state_path or await asyncio.to_thread(
@@ -508,8 +559,12 @@ async def read_episode_production_status(
             if media["present"] and media["actual_seconds"] is None:
                 try:
                     path = await asyncio.to_thread(safe_join, project_dir, media["path"])
-                    stream = (await media_probe(path)).first_stream(kind)
+                    probe = await media_probe(path)
+                    stream = probe.first_stream(kind)
                     media["actual_seconds"] = stream.duration_seconds if stream is not None else None
+                    if kind == "video":
+                        audio_stream = probe.first_stream("audio")
+                        media["has_audio"] = audio_stream is not None and audio_stream.packet_count > 0
                 except (OSError, ValueError):
                     media["duration_problem"] = "media_unreadable"
     result["active_tasks"] = active
@@ -521,7 +576,12 @@ async def read_episode_production_status(
     for document in documents:
         clip_ids = [clip.unit_id for clip in document.latest.content.clips]
         matches = bool(units) and list(dict.fromkeys(clip_ids)) == units
-        status = await service.status(project_name, document.id, narration=WITH_NARRATION, subtitles=BURNED_SUBTITLES)
+        narration = (
+            WITH_NARRATION
+            if any(_speech_mode(unit) is SpeechMode.NARRATOR_VOICEOVER for unit in result["units"])
+            else None
+        )
+        status = await service.status(project_name, document.id, narration=narration, subtitles=BURNED_SUBTITLES)
         readout = await timeline_service.read(project_name, document.id, revision=document.latest.number)
         final = status.model_dump(mode="json")
         final["current"] = status.status is ArtifactStatus.CURRENT

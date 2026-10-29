@@ -328,7 +328,16 @@ async def test_preparation_ignores_output_bookkeeping_but_not_formal_prompt_edit
     assert (await status())["preparation"]["fingerprint"] != outputs["preparation"]["fingerprint"]
 
 
-def _native_delivery(*, first_audio=7.5, second_audio=7.5, first_volume=0, second_volume=0):
+def _native_delivery(
+    *,
+    first_audio=7.5,
+    second_audio=7.5,
+    first_volume=0,
+    second_volume=0,
+    utterances=None,
+    clips=None,
+    narration="with_narration",
+):
     from lib.edit_timeline.model import (
         EditClip,
         EditTimelineContent,
@@ -338,13 +347,31 @@ def _native_delivery(*, first_audio=7.5, second_audio=7.5, first_volume=0, secon
     )
     from lib.edit_timeline.readout import project_readout
     from lib.edit_timeline.sources import EpisodeScriptUnits, EpisodeSources, ScriptUnit, UnitMedia
-    from lib.speech.speech_composition import SpeechMode
+    from lib.speech.speech_composition import SpeechMode, admit_script_unit
 
     ids = ["E2S01", "E2S02"]
+    admissions = (
+        [
+            admit_script_unit("scenes", {"scene_id": unit_id, "utterances": spoken})
+            for unit_id, spoken in zip(ids, utterances, strict=True)
+        ]
+        if utterances is not None
+        else None
+    )
+    modes = (
+        [admission.mode for admission in admissions] if admissions is not None else [SpeechMode.NARRATOR_VOICEOVER] * 2
+    )
     content = EditTimelineContent(
-        clips=tuple(
-            EditClip(id=f"c{index + 1}", unit_id=unit_id, source_volume=volume, carries_narration=True)
-            for index, (unit_id, volume) in enumerate(zip(ids, [first_volume, second_volume], strict=True))
+        clips=clips
+        if clips is not None
+        else tuple(
+            EditClip(
+                id=f"c{index + 1}",
+                unit_id=unit_id,
+                source_volume=volume,
+                carries_narration=mode is SpeechMode.NARRATOR_VOICEOVER,
+            )
+            for index, (unit_id, volume, mode) in enumerate(zip(ids, [first_volume, second_volume], modes, strict=True))
         )
     )
     revision = TimelineRevision(
@@ -359,36 +386,48 @@ def _native_delivery(*, first_audio=7.5, second_audio=7.5, first_volume=0, secon
         episode=2,
         name="Episode two",
         created_at=revision.created_at,
-        next_clip_number=3,
+        next_clip_number=len(content.clips) + 1,
         revisions=(revision,),
     )
     script = EpisodeScriptUnits(
-        2, "segments", tuple(ScriptUnit(unit_id, SpeechMode.NARRATOR_VOICEOVER, 8_000_000, "test") for unit_id in ids)
+        2,
+        "scenes" if admissions is not None else "segments",
+        tuple(ScriptUnit(unit_id, mode, 8_000_000, "test") for unit_id, mode in zip(ids, modes, strict=True)),
     )
     sources = EpisodeSources(
         script,
         {
-            unit_id: UnitMedia(1, 8_000_000, round(seconds * 1_000_000))
-            for unit_id, seconds in zip(ids, [first_audio, second_audio], strict=True)
+            unit_id: UnitMedia(
+                1, 8_000_000, round(seconds * 1_000_000) if mode is SpeechMode.NARRATOR_VOICEOVER else None
+            )
+            for unit_id, seconds, mode in zip(ids, [first_audio, second_audio], modes, strict=True)
         },
         True,
     )
     readout = project_readout(document, revision, sources)
     units = [
-        {"unit_id": unit_id, "audio": {"status": "current", "actual_seconds": seconds}}
-        for unit_id, seconds in zip(ids, [first_audio, second_audio], strict=True)
+        {
+            "unit_id": unit_id,
+            "audio": {
+                "status": "current" if mode is SpeechMode.NARRATOR_VOICEOVER else "missing",
+                "actual_seconds": seconds if mode is SpeechMode.NARRATOR_VOICEOVER else None,
+            },
+            "video": {"status": "current", "present": True, "provider_audio": True, "has_audio": True},
+            **({"speech": admissions[index].to_dict()} if admissions is not None else {}),
+        }
+        for index, (unit_id, seconds, mode) in enumerate(zip(ids, [first_audio, second_audio], modes, strict=True))
     ]
     timeline = {
         "timeline_id": document.id,
         "episode_id": 2,
-        "unit_ids": ids,
+        "unit_ids": [clip.unit_id for clip in content.clips],
         "readout": readout.model_dump(mode="json"),
         "final_cut": {
             "episode": 2,
             "timeline_id": document.id,
             "status": "current",
             "version": 1,
-            "narration": "with_narration",
+            "narration": narration,
             "subtitles": "burned_subtitles",
         },
     }
@@ -433,6 +472,149 @@ def test_autonomous_completion_refuses_native_warning_only_speech_loss_and_raw_a
         assert all(issue["severity"] == "warning" for issue in warnings)
     assert timeline["final_cut"]["status"] == "current"
     assert episode_final_cut_complete(2, units, [timeline]) is False
+
+
+_CHARACTER_LINE = [{"kind": "dialogue", "speaker": "张小凡", "text": "我在这里。"}]
+_NARRATOR_LINE = [{"kind": "voiceover", "text": "山中起了雾。"}]
+
+
+@pytest.mark.parametrize("narration", ["with_narration", "without_narration"])
+@pytest.mark.parametrize("silent_volume", [0, 1])
+@pytest.mark.parametrize("video_status", ["current", "stale"])
+def test_drama_character_audio_and_silent_ambience_do_not_require_narrator_wav(narration, silent_volume, video_status):
+    units, timeline = _native_delivery(
+        utterances=[_CHARACTER_LINE, []], first_volume=0.8, second_volume=silent_volume, narration=narration
+    )
+    units[0]["video"]["status"] = video_status
+    assert all(unit["audio"]["status"] == "missing" for unit in units)
+    assert episode_final_cut_complete(2, units, [timeline]) is True
+
+
+@pytest.mark.parametrize("missing", ["muted", "provider_audio", "has_audio", "present", "unavailable", "unknown_audio"])
+def test_character_delivery_requires_selected_source_audio_not_bgm_or_a_volume_setting(missing):
+    units, timeline = _native_delivery(utterances=[_CHARACTER_LINE, []], first_volume=1)
+    if missing == "muted":
+        timeline["readout"]["clips"][0]["source_volume"] = 0
+    elif missing == "unavailable":
+        units[0]["video"]["status"] = "missing"
+    elif missing == "unknown_audio":
+        units[0]["video"].pop("has_audio")
+    else:
+        units[0]["video"][missing] = False
+    assert episode_final_cut_complete(2, units, [timeline]) is False
+
+
+@pytest.mark.parametrize("problem", [None, "without_narration", "missing_wav", "unmuted", "missing_carrier", "overrun"])
+def test_drama_separate_character_and_narrator_units_keep_full_narrator_protection(problem):
+    units, timeline = _native_delivery(utterances=[_CHARACTER_LINE, _NARRATOR_LINE], first_volume=1)
+    if problem == "without_narration":
+        timeline["final_cut"]["narration"] = "without_narration"
+    elif problem == "missing_wav":
+        units[1]["audio"]["status"] = "missing"
+    elif problem == "unmuted":
+        timeline["readout"]["clips"][1]["source_volume"] = 0.2
+    elif problem == "missing_carrier":
+        timeline["readout"]["clips"][1]["carries_narration"] = False
+    elif problem == "overrun":
+        units[1]["audio"]["actual_seconds"] = 9
+        timeline["readout"]["clips"][1]["narration"]["end"] = 17
+    assert episode_final_cut_complete(2, units, [timeline]) is (problem is None)
+
+
+@pytest.mark.parametrize("utterances", [[*_CHARACTER_LINE, *_NARRATOR_LINE], [{"kind": "unsupported", "text": "声音"}]])
+def test_mixed_or_unsupported_native_speech_admission_cannot_complete(utterances):
+    units, timeline = _native_delivery(utterances=[utterances, []], first_volume=1)
+    assert units[0]["speech"]["allowed"] is False
+    assert episode_final_cut_complete(2, units, [timeline]) is False
+
+
+def test_drama_native_trims_and_repeated_clips_preserve_first_occurrence_order():
+    from lib.edit_timeline.model import ClipTrim, EditClip
+
+    clips = (
+        EditClip(id="c1", unit_id="E2S01", source_volume=1, trim=ClipTrim(in_us=0, out_us=2_000_000, basis_version=1)),
+        EditClip(
+            id="c2",
+            unit_id="E2S01",
+            source_volume=0.7,
+            trim=ClipTrim(in_us=4_000_000, out_us=7_000_000, basis_version=1),
+        ),
+        EditClip(id="c3", unit_id="E2S02", source_volume=0),
+    )
+    units, timeline = _native_delivery(utterances=[_CHARACTER_LINE, []], clips=clips, narration="without_narration")
+    assert timeline["readout"]["clips"][1]["trim"]["source_in"] == 4
+    assert episode_final_cut_complete(2, units, [timeline]) is True
+    _, repeated = _native_delivery(utterances=[_CHARACTER_LINE, []], clips=(clips[0], clips[2], clips[1]))
+    assert episode_final_cut_complete(2, units, [repeated]) is True
+    _, reordered = _native_delivery(utterances=[_CHARACTER_LINE, []], clips=(clips[2], clips[0], clips[1]))
+    assert episode_final_cut_complete(2, units, [reordered]) is False
+    # A repeated narrator carrier would play the same complete WAV twice.
+    narrator_units, repeated = _native_delivery()
+    repeated["readout"]["clips"].insert(1, copy.deepcopy(repeated["readout"]["clips"][0]))
+    repeated["unit_ids"].insert(1, "E2S01")
+    assert episode_final_cut_complete(2, narrator_units, [repeated]) is False
+
+
+@pytest.mark.parametrize("audio_packets", [None, 0, 12])
+async def test_drama_status_projects_native_speech_version_audio_flag_and_same_probe_streams(tmp_path, audio_packets):
+    from lib.infra.media_probe import MediaProbe, MediaStream
+
+    projects, directory = _project(tmp_path)
+    project_path = directory / "project.json"
+    project = json.loads(project_path.read_text())
+    project["content_mode"] = "drama"
+    project_path.write_text(json.dumps(project))
+    (directory / "scripts/episode_2.json").write_text(
+        json.dumps(
+            {
+                "episode": 2,
+                "content_mode": "drama",
+                "scenes": [
+                    {
+                        "scene_id": "E2S01",
+                        "duration_seconds": 8,
+                        "utterances": _CHARACTER_LINE,
+                        "generated_assets": {"video_clip": "videos/scene_E2S01.mp4"},
+                    }
+                ],
+            }
+        )
+    )
+    video = directory / "videos/scene_E2S01.mp4"
+    video.parent.mkdir()
+    video.write_bytes(b"media probe boundary fixture")
+    VersionManager(directory).add_version(
+        "videos", "E2S01", "native", source_file=video, execution_generate_audio=False
+    )
+    probes = []
+
+    async def media_probe(path):
+        probes.append(path)
+        streams = [MediaStream("video", "h264", 8, 192)]
+        if audio_packets is not None:
+            streams.append(MediaStream("audio", "aac", 8, audio_packets))
+        return MediaProbe(frozenset({"mp4"}), tuple(streams), 8)
+
+    status = await read_episode_production_status(
+        "demo",
+        2,
+        projects=projects,
+        queue=QueueFacts(),
+        resource_state_path=tmp_path / "absent.json",
+        media_probe=media_probe,
+    )
+    [unit] = status["units"]
+    assert unit["speech"] == {
+        "unit_id": "E2S01",
+        "allowed": True,
+        "mode": "character_speech",
+        "problems": [],
+    }
+    assert unit["video"]["provider_audio"] is False
+    assert unit["video"]["has_audio"] is (audio_packets is not None and audio_packets > 0)
+    assert unit["video"]["actual_seconds"] == 8
+    assert probes == [video]
+    assert status["goal_complete_technical"] is False
 
 
 async def test_select_image_version_uses_native_restore_and_preserves_independent_tail(tmp_path):

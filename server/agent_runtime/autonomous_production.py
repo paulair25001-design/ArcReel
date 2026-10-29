@@ -60,11 +60,14 @@ def compact_facts(facts: dict[str, Any]) -> dict[str, Any]:
             media[kind] = {
                 key: value.get(key) for key in ("status", "present", "actual_seconds", "selected_version", "sha256")
             }
+            if kind == "video":
+                media[kind].update({key: value[key] for key in ("provider_audio", "has_audio") if key in value})
         units.append(
             {
                 "unit_id": unit.get("unit_id"),
                 "text": unit.get("text"),
                 "declared_seconds": unit.get("declared_seconds"),
+                **({"speech": unit["speech"]} if "speech" in unit else {}),
                 **media,
                 "end_frame": unit.get("end_frame", {}),
             }
@@ -169,7 +172,10 @@ def continuation_message(goal: dict[str, Any], facts: dict[str, Any], mode: str)
         "资产与分镜按原生 review-images 检查；剪辑按原生 edit-video 首轮全量 review-footage，不能直接跳到渲染。"
         "native_review.ready 只表示报告覆盖，并非可用结论；按 reports 原文处理问题、选版、修复和复审，"
         "未修复的问题按原生交付要求如实列出，不能把已有 current 当作质量通过。"
-        "保留原生修复后比较新旧与停止规则，不另建审核评分或无限重抽。完整旁白按实测容纳，等待全部写入任务终态后继续。"
+        "保留原生修复后比较新旧与停止规则，不另建审核评分或无限重抽。"
+        "按原生 speech 发声归属处理声音：角色对白保留视频原声音轨，不要求旁白 WAV；"
+        "画外旁白使用本地 TTS 并静音该镜头的视频原声，完整旁白按实测容纳；静默镜头可保留环境声。"
+        "发声归属不合法时先按原生要求修复，不把角色对白送入旁白 TTS。等待全部写入任务终态后继续。"
         "调用生成或编辑工具得到在途任务后，结束本轮并说明等待；后台服务会在原生任务完成后继续同一会话，"
         "不要反复轮询模型或自行启动后台脚本。所有已有提交先对账，不重放旧工具调用。"
         "最终目标是指定集的 current 成片，旁白项目需完整旁白和烧录字幕，随后 finish_local_session 恢复模型并真实收尾。"
