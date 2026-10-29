@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -31,6 +32,20 @@ _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _MAX_IMAGES = 96
 _MIMES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 _RESOURCE_TYPES = {"character", "scene", "prop", "product", "storyboard", "character_derivative"}
+
+
+class _SessionPixels:
+    def __init__(self, session_id: str | None = None, parent_session_id: str | None = None) -> None:
+        self.session_id = session_id
+        self.parent_session_id = parent_session_id
+        self.transport_id = uuid.uuid4().hex
+        self.expected: Counter[str] = Counter()
+        self.pending: dict[tuple[Any, ...], dict[str, Any] | None] = {}
+        self.observed_images: list[dict[str, Any]] = []
+        self.observed_video_units: list[dict[str, Any]] = []
+        self.pending_video_units: list[dict[str, Any]] = []
+        self.turn = 0
+        self.request = 0
 
 
 def _generation_parameters(payload: Any) -> dict[str, Any]:
@@ -117,6 +132,32 @@ def _observation_rows(payload: Any, images: list[tuple[dict[str, Any], dict[str,
     return result
 
 
+def _video_observations(payload: Any, images: list[tuple[dict[str, Any], dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Bind native unit versions to the contact sheets attached in that result."""
+    result = []
+    used: set[int] = set()
+    for unit in payload.get("structuredContent", {}).get("inspect_video_units", {}).get("units", []):
+        if unit.get("status") != "ok":
+            continue
+        identity, version = unit.get("unit_id"), unit.get("version")
+        sheets = unit.get("sheets")
+        if not isinstance(identity, str) or not identity or type(version) is not int or version < 1:
+            raise ValueError("ArcReel video inspection has no valid unit version")
+        if not isinstance(sheets, list) or not sheets:
+            raise ValueError("ArcReel video inspection has no contact sheets")
+        hashes = []
+        for sheet in sheets:
+            number = sheet.get("image")
+            if type(number) is not int or number < 1 or number > len(images) or number in used:
+                raise ValueError("ArcReel video inspection has inconsistent attachment order")
+            used.add(number)
+            hashes.append(images[number - 1][1]["sha256"])
+        result.append({"unit_id": identity, "version": version, "wire_image_sha256s": hashes})
+    if used != set(range(1, len(images) + 1)):
+        raise ValueError("ArcReel video contact sheets do not match the native unit result")
+    return result
+
+
 class VisionTransport:
     """Retain actual MCP bytes until the next pinned local model request."""
 
@@ -130,7 +171,6 @@ class VisionTransport:
         }:
             raise ValueError("ArcReel vision transport requires a loopback endpoint")
         self.model = model
-        self.transport_id = uuid.uuid4().hex
         self._capture: contextvars.ContextVar[list[tuple[dict[str, Any], dict[str, Any]]] | None] = (
             contextvars.ContextVar("arcreel_mcp_image_capture", default=None)
         )
@@ -138,11 +178,66 @@ class VisionTransport:
         self._request_kind: contextvars.ContextVar[str] = contextvars.ContextVar(
             "arcreel_native_request_kind", default="main"
         )
-        self._expected: Counter[str] = Counter()
-        self._pending: dict[tuple[Any, ...], dict[str, Any] | None] = {}
-        self._session_id: str | None = None
-        self._turn = 0
-        self._request = 0
+        self._root_pixels = _SessionPixels()
+        self._agent_pixels: contextvars.ContextVar[_SessionPixels | None] = contextvars.ContextVar(
+            "arcreel_agent_pixels", default=None
+        )
+
+    @property
+    def _pixels(self) -> _SessionPixels:
+        return self._agent_pixels.get() or self._root_pixels
+
+    @property
+    def transport_id(self) -> str:
+        return self._pixels.transport_id
+
+    @property
+    def _expected(self) -> Counter[str]:
+        return self._pixels.expected
+
+    @_expected.setter
+    def _expected(self, value: Counter[str]) -> None:
+        self._pixels.expected = value
+
+    @property
+    def _pending(self) -> dict[tuple[Any, ...], dict[str, Any] | None]:
+        return self._pixels.pending
+
+    @property
+    def _session_id(self) -> str | None:
+        return self._pixels.session_id
+
+    @_session_id.setter
+    def _session_id(self, value: str) -> None:
+        self._pixels.session_id = value
+
+    @property
+    def _turn(self) -> int:
+        return self._pixels.turn
+
+    @_turn.setter
+    def _turn(self, value: int) -> None:
+        self._pixels.turn = value
+
+    @property
+    def _request(self) -> int:
+        return self._pixels.request
+
+    @_request.setter
+    def _request(self, value: int) -> None:
+        self._pixels.request = value
+
+    @contextmanager
+    def agent_scope(self, session_id: str, *, parent_session_id: str):
+        """Keep delegated reviewers' pixels and receipts in their own context."""
+        token = self._agent_pixels.set(_SessionPixels(session_id=session_id, parent_session_id=parent_session_id))
+        try:
+            self.begin_turn(session_id)
+            with self._mutex:
+                self._record("agent_started")
+            yield self._pixels
+        finally:
+            self._agent_pixels.reset(token)
 
     def _record(self, event: str, **facts: Any) -> None:
         # Called under the mutex from model/tool worker threads, never the ACP event loop.
@@ -157,6 +252,7 @@ class VisionTransport:
                         "event": event,
                         "timestamp": time.time(),
                         "session_id": self._session_id,
+                        "parent_session_id": self._pixels.parent_session_id,
                         "turn": self._turn,
                         **facts,
                     },
@@ -230,7 +326,9 @@ class VisionTransport:
                 if "error" in payload:
                     raise ValueError("ArcReel MCP returned image content in an error result")
                 rows = _observation_rows(payload, images) if tool_name == "inspect_images" else []
+                video_rows = _video_observations(payload, images) if tool_name == "inspect_video_units" else []
                 with self._mutex:
+                    self._pixels.pending_video_units.extend(video_rows)
                     if rows:
                         for row in rows:
                             key = (
@@ -320,6 +418,7 @@ class VisionTransport:
                 actual_images = Counter(image["sha256"] for image in images)
                 expected_snapshot = self._expected.copy()
                 pending_snapshot = self._pending.copy()
+                video_snapshot = list(self._pixels.pending_video_units)
                 request_session = self._session_id
                 request_turn = self._turn
                 request_kind = self._request_kind.get()
@@ -371,6 +470,7 @@ class VisionTransport:
                 if not auxiliary and 200 <= response.status_code < 300:
                     rows = [row for row in pending_snapshot.values() if row is not None]
                     if rows:
+                        self._pixels.observed_images.extend(rows)
                         self._record(
                             "observed_images",
                             request_id=request_id,
@@ -384,6 +484,22 @@ class VisionTransport:
                             session_id=request_session,
                             turn=request_turn,
                         )
+                    if video_snapshot:
+                        self._pixels.observed_video_units.extend(video_snapshot)
+                        self._record(
+                            "observed_video_units",
+                            request_id=request_id,
+                            request_kind="main",
+                            model=self.model,
+                            endpoint_matches_configured=endpoint_matches,
+                            model_matches_configured=True,
+                            status_code=response.status_code,
+                            body_sha256=hashlib.sha256(raw).hexdigest(),
+                            rows=video_snapshot,
+                            session_id=request_session,
+                            turn=request_turn,
+                        )
+                        del self._pixels.pending_video_units[: len(video_snapshot)]
                     # A later request may legitimately compress already-delivered pixels.
                     if self._session_id == request_session:
                         for key in pending_snapshot:

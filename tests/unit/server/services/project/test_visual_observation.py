@@ -153,6 +153,22 @@ async def test_matching_native_versions_and_reencoded_bound_tail_pass(frames, tm
     assert before == {str(file): file.read_bytes() for file in directory.rglob("*") if file.is_file()}
 
 
+@pytest.mark.parametrize("owned_parent", ["sid", "another-parent", None])
+async def test_native_delegated_image_review_counts_only_for_its_own_parent(frames, tmp_path, owned_parent):
+    *_, first, tail = frames
+    path = tmp_path / "audit.jsonl"
+    started = {
+        "protocol": "arcreel-mcp-vision/v2",
+        "event": "agent_started",
+        "session_id": "review-child",
+        "parent_session_id": owned_parent,
+    }
+    _audit(path, [started, *_events([_row(first, 1), _row(tail, 2)], session="review-child")])
+    result = await _read(frames, path)
+    assert result["ready"] is (owned_parent == "sid")
+    assert result["matched_count"] == (2 if owned_parent == "sid" else 0)
+
+
 @pytest.mark.parametrize(
     "change",
     [

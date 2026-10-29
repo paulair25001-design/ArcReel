@@ -562,6 +562,7 @@ async def read_episode_production_status(
         "action": None,
         "proof_digest": None,
     }
+    result["native_review"] = {"enabled": False, "ready": True, "missing": []}
     if local_only_enabled():
         from server.agent_runtime.autonomy_store import ACTIVE_STATES, AutonomyStore
 
@@ -576,9 +577,17 @@ async def read_episode_production_status(
                 result["visual_observation"] = await read_visual_observation_status(
                     project_name, episode_id, session_id, projects=projects, user_id=user_id
                 )
+                from server.services.project.native_review import read_native_review_status
+
+                result["native_review"] = await read_native_review_status(
+                    project_name, episode_id, session_id, projects=projects, user_id=user_id
+                )
             else:
                 result["visual_observation"].update(enabled=True, ready=False, problem="goal_session_missing")
+                result["native_review"].update(enabled=True, ready=False, problem="goal_session_missing")
             result["goal_complete_technical"] = (
-                result["goal_complete_technical"] and result["visual_observation"]["ready"]
+                result["goal_complete_technical"]
+                and result["visual_observation"]["ready"]
+                and result["native_review"]["ready"]
             )
     return result

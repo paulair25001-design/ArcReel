@@ -89,6 +89,14 @@ def compact_facts(facts: dict[str, Any]) -> dict[str, Any]:
         "active_tasks": facts.get("active_tasks", []),
         "failed_tasks": facts.get("failed_tasks", [])[:8],
         "timelines": facts.get("timelines", []),
+        "native_review": {
+            "ready": facts.get("native_review", {}).get("ready"),
+            "missing": facts.get("native_review", {}).get("missing", []),
+            "reviewed": [
+                {key: row.get(key) for key in ("unit_id", "version")}
+                for row in facts.get("native_review", {}).get("reviewed", [])
+            ],
+        },
         "goal_complete_technical": bool(facts.get("goal_complete_technical")),
         "resource": {
             key: resource.get(key) for key in ("owner_project", "project", "state", "original_service_restored")
@@ -154,7 +162,9 @@ def continuation_message(goal: dict[str, Any], facts: dict[str, Any], mode: str)
         "读取 get_episode_production_status 与 get_workflow_plan，根据当前事实选择原生工具，保留已完成内容。"
         "全部推理只用本地 Hermes/oMLX、L20 和免费本地配音，不调用 Codex、云端或旧制作工作流。"
         "授权范围内的内容确认、低风险制作选择与有据的最小修复自行完成，无需逐步问用户。"
-        "先容纳完整实际旁白并按视频能力修正时长或原文拆镜；等待项目全部写入任务终态后再推进下一阶段。"
+        "先经 read_agent_profile 读取当前模式的原生 video-workflow，再按原生技能派发 dispatch_agent。"
+        "资产与分镜按原生 review-images 检查；剪辑按原生 edit-video 首轮全量 review-footage，不能直接跳到渲染。"
+        "保留原生修复后比较新旧与停止规则，不另建审核评分或无限重抽。完整旁白按实测容纳，等待全部写入任务终态后继续。"
         "调用生成或编辑工具得到在途任务后，结束本轮并说明等待；后台服务会在原生任务完成后继续同一会话，"
         "不要反复轮询模型或自行启动后台脚本。所有已有提交先对账，不重放旧工具调用。"
         "最终目标是指定集的 current 成片，旁白项目需完整旁白和烧录字幕，随后 finish_local_session 恢复模型。"

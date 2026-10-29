@@ -62,7 +62,18 @@ def _mcp(
                             }
                         }
                         if tool == "inspect_images"
-                        else {"inspect_video_units": {"units": []}},
+                        else {
+                            "inspect_video_units": {
+                                "units": [
+                                    {
+                                        "unit_id": "S01",
+                                        "version": 1,
+                                        "status": "ok",
+                                        "sheets": [{"image": i + 1} for i in range(image_count)],
+                                    }
+                                ]
+                            }
+                        },
                     }
                 )
 
@@ -186,6 +197,39 @@ def test_declared_images_cannot_silently_become_media_text(tmp_path: Path):
     transport = VisionTransport(tmp_path, base_url="http://127.0.0.1:8000/v1", model="qwen")
     with pytest.raises(ValueError, match="not captured"):
         _mcp(transport, attached=False)._make_tool_handler("arcreel", "inspect_images", 30)({})
+
+
+def test_delegated_review_pixels_remain_owned_by_the_child_context(tmp_path: Path, respx_mock: respx.MockRouter):
+    transport = VisionTransport(tmp_path, base_url="http://127.0.0.1:8000/v1", model="qwen")
+    transport.begin_turn("parent")
+    mcp = _mcp(transport)
+    http = _http_module()
+    transport.install_http(http)
+    respx_mock.post("http://127.0.0.1:8000/v1/chat/completions").respond(200, json={"ok": True})
+    with transport.agent_scope("review-1", parent_session_id="parent"):
+        images = mcp._make_tool_handler("arcreel", "inspect_images", 30)({})
+        reviewer_context = contextvars.copy_context()
+    with http.Client() as client:
+
+        def request(content):
+            return client.post(
+                "http://127.0.0.1:8000/v1/chat/completions",
+                json={"model": "qwen", "messages": [{"role": "user", "content": content}]},
+            )
+
+        assert request("parent reads only a report").status_code == 200
+        with transport.agent_scope("review-2", parent_session_id="parent"):
+            assert request("independent reviewer").status_code == 200
+        with pytest.raises(ValueError, match="contract was not preserved"):
+            reviewer_context.run(request, "review-1 cannot omit its pending images")
+        assert reviewer_context.run(request, images["content"]).status_code == 200
+    rows = _receipt(tmp_path)
+    seen = [row for row in rows if row["event"] == "observed_images"]
+    assert len(seen) == 1
+    assert seen[0]["session_id"] == "review-1"
+    assert seen[0]["parent_session_id"] == "parent"
+    assert seen[0]["rows"][0]["source_pixel_sha256"] == _PIXEL_SHA
+    assert {row["session_id"] for row in rows if row["event"] == "request"} == {"parent", "review-1", "review-2"}
 
 
 def test_acp_projects_text_only_while_inference_retains_pixels():
@@ -349,6 +393,10 @@ def test_native_video_contact_sheets_reach_model_without_creating_image_version_
     assert request["image_count"] == 1
     assert request["required_images_present"] is True
     assert not [row for row in _receipt(tmp_path) if row["event"] == "observed_images"]
+    observed = [row for row in _receipt(tmp_path) if row["event"] == "observed_video_units"]
+    assert observed[0]["rows"] == [
+        {"unit_id": "S01", "version": 1, "wire_image_sha256s": [hashlib.sha256(_IMAGE).hexdigest()]}
+    ]
 
 
 def test_visual_tool_image_limit_is_explicit_and_never_drops_frames(tmp_path: Path):

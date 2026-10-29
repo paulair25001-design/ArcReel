@@ -129,6 +129,7 @@ class HermesAgentOptions:
     home: Path
     project_name: str
     system_prompt: str
+    native_profile: dict[str, Any] | None = None
     user_id: str = DEFAULT_USER_ID
     resume: str | None = None
     session_id: str | None = None
@@ -229,11 +230,17 @@ class HermesSDKClient:
         await run_sync_transaction(
             prepare_hermes_home, config, self.options.home, cwd=self.options.cwd, agent_tools=True
         )
+        if self.options.native_profile is not None:
+            await run_sync_transaction(
+                atomic_write_json, self.options.home / "native-profile.json", self.options.native_profile
+            )
         env = build_hermes_environment(config, self.options.home, cwd=self.options.cwd)
         env["PYTHONPATH"] = str(config.hermes_source)
         env["HERMES_EPHEMERAL_SYSTEM_PROMPT"] = self.options.system_prompt
         env["ARCREEL_HERMES_EXPECTED_MODEL"] = config.hermes_model
         env["ARCREEL_HERMES_EXPECTED_BASE_URL"] = config.hermes_base_url
+        if self.options.native_profile is not None:
+            env["ARCREEL_HERMES_NATIVE_PROFILE"] = str(self.options.home / "native-profile.json")
         bootstrap = Path(__file__).with_name("hermes_acp_bootstrap.py")
         self._process = await self._process_factory(
             config.hermes_python,

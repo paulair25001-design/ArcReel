@@ -16,9 +16,15 @@ from server.agent_runtime.options_assembler import OptionsAssembler, agent_prici
 from server.remote_mcp import ArcApiKeyVerifier
 
 
+@pytest.fixture(autouse=True)
+def native_profile_source(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ARCREEL_PROFILE_DIR", str(Path(__file__).resolve().parents[4] / "agent_runtime_profile"))
+
+
 def _assembler(data_root: Path, project: str) -> OptionsAssembler:
     cwd = DataRootLayout(data_root).projects_dir / project
     cwd.mkdir(parents=True)
+    (cwd / "project.json").write_text(json.dumps({"content_mode": "narration"}), encoding="utf-8")
 
     def no_legacy_policy():
         raise AssertionError("The local Agent must not assemble the Claude sandbox or legacy profile")
@@ -47,6 +53,10 @@ async def test_local_options_use_real_current_project_scope_without_cloud_reads(
     options = await assembler.build(project)
 
     assert isinstance(options, HermesAgentOptions)
+    assert options.native_profile is not None
+    assert options.native_profile["content_mode"] == "narration"
+    assert "review-footage" in options.native_profile["agents"]
+    assert "dispatch_agent" in options.system_prompt
     assert options.cwd == layout.projects_dir / project
     assert options.config.hermes_mcp_token != "unscoped-token-from-environment"
     access = await ArcApiKeyVerifier().verify_token(options.config.hermes_mcp_token)

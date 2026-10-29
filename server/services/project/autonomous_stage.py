@@ -67,6 +67,23 @@ def _requested_episode(name: str, arguments: dict[str, Any], scope: ProjectScope
     return matches[0] if len(matches) == 1 else None
 
 
+def _timeline_review_versions(
+    arguments: dict[str, Any], scope: ProjectScope, services: Services
+) -> list[dict[str, Any]]:
+    from lib.artifacts.version_manager import VersionManager
+    from lib.edit_timeline.store import EditTimelineStore
+    from lib.project.project_manager import is_reference_video_project
+
+    document = EditTimelineStore(services.projects, scope.project_name).find(arguments["timeline"])
+    project = services.projects.load_project(scope.project_name)
+    versions = VersionManager(services.projects.get_project_path(scope.project_name))
+    resource_type = "reference_videos" if is_reference_video_project(project) else "videos"
+    return [
+        {"unit_id": unit_id, "version": versions.get_current_version(resource_type, unit_id)}
+        for unit_id in dict.fromkeys(clip.unit_id for clip in document.latest.content.clips)
+    ]
+
+
 @asynccontextmanager
 async def production_tool_admission(
     name: str,
@@ -76,6 +93,7 @@ async def production_tool_admission(
     *,
     goal_store: GoalReader | None = None,
     visual_reader: Callable[..., Awaitable[dict[str, Any]]] | None = None,
+    review_reader: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     arguments: dict[str, Any] | None = None,
 ) -> AsyncGenerator[ToolProblem | None]:
     if not name.startswith("generate_") and name not in PRODUCTION_WRITER_TOOLS:
@@ -173,6 +191,38 @@ async def production_tool_admission(
                     },
                 )
                 return
+            if name == "render_final_cut" and arguments is not None:
+                if review_reader is None:
+                    from server.services.project.native_review import read_native_review_status
+
+                    review_reader = read_native_review_status
+                review = await review_reader(
+                    scope.project_name,
+                    episode_id,
+                    session_id,
+                    projects=services.projects,
+                    user_id=caller.user_id,
+                    required_versions=await asyncio.to_thread(_timeline_review_versions, arguments, scope, services),
+                )
+                admitted = await store.get_latest(scope.project_name, caller.user_id)
+                if (
+                    admitted is None
+                    or admitted.get("id") != fresh.get("id")
+                    or admitted.get("session_id") != session_id
+                    or admitted.get("state") not in (guarded_states - {"stopping"})
+                ):
+                    yield ToolProblem(
+                        "autonomous_goal_changed", "The native goal changed during footage review admission."
+                    )
+                    return
+                if review.get("ready") is not True:
+                    yield ToolProblem(
+                        "native_footage_review_required",
+                        "Run the native edit-video first-pass review-footage for every selected video version before rendering.",
+                        action="dispatch_agent",
+                        params={"agent_type": "review-footage", "missing": review.get("missing", [])},
+                    )
+                    return
         # The lock spans this one host invocation, including enqueue. Parallel
         # tool calls cannot both see an empty queue. A batch's internal enqueue
         # operations do not re-enter this boundary.

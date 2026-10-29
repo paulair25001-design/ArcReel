@@ -174,6 +174,7 @@ def _successful_observations(path: Path | None, session_id: str, model: str) -> 
     requests: dict[tuple[str, int], dict[str, Any]] = {}
     responses: dict[tuple[str, int], dict[str, Any]] = {}
     observations: list[dict[str, Any]] = []
+    observers = {session_id}
     with path.open(encoding="utf-8") as stream:
         for line in stream:
             try:
@@ -181,7 +182,20 @@ def _successful_observations(path: Path | None, session_id: str, model: str) -> 
             except ValueError:
                 # An append may be in progress; only complete events establish evidence.
                 continue
-            if not isinstance(row, dict) or (key := _event_key(row, session_id)) is None:
+            if not isinstance(row, dict):
+                continue
+            observer = row.get("session_id")
+            if (
+                row.get("protocol") == _PROTOCOL
+                and row.get("event") == "agent_started"
+                and row.get("parent_session_id") == session_id
+                and isinstance(observer, str)
+                and observer
+                and observer != session_id
+            ):
+                observers.add(observer)
+                continue
+            if not isinstance(observer, str) or observer not in observers or (key := _event_key(row, observer)) is None:
                 continue
             event = row.get("event")
             if event == "request":
@@ -246,7 +260,14 @@ def _successful_observations(path: Path | None, session_id: str, model: str) -> 
                     continue
                 used[image["wire_image_sha256"]] += 1
                 valid.append(
-                    {**image, "transport_id": key[0], "request_id": key[1], "body_sha256": body, "model": model}
+                    {
+                        **image,
+                        "transport_id": key[0],
+                        "request_id": key[1],
+                        "body_sha256": body,
+                        "model": model,
+                        "observer_session_id": observer,
+                    }
                 )
             if valid and not (used - wire):
                 observations.extend(valid)

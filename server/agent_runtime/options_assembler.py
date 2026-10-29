@@ -39,6 +39,7 @@ from lib.prompts.prompt_templates.builtin import builtin_templates
 from server.agent_runtime.agent_access_policy import AgentAccessPolicy
 from server.agent_runtime.arcreel_mcp import build_arcreel_mcp_server
 from server.agent_runtime.hermes_client import HermesAgentOptions, recorded_hermes_home
+from server.agent_runtime.hermes_native_profile import HermesNativeProfile, load_hermes_native_profile
 from server.auth import EMBEDDED_AGENT_SUB, create_token, is_auth_enabled
 
 logger = logging.getLogger(__name__)
@@ -56,11 +57,15 @@ _EMBEDDED_AGENT_TOKEN_EXPIRY_SECONDS = 15 * 60
 CLI_STDOUT_MAX_BUFFER_BYTES = 32 * 1024 * 1024
 
 
-def _read_public_workflow() -> str:
+def _read_native_workflow(project_cwd: Path) -> tuple[HermesNativeProfile, str]:
+    project = json.loads((project_cwd / "project.json").read_text(encoding="utf-8"))
+    mode = project.get("content_mode")
+    if mode not in {"narration", "drama", "ad"}:
+        raise ValueError("The project has no valid native content mode")
+    profile = load_hermes_native_profile(mode)
     workflow_dir = Path(__file__).resolve().parents[2] / "skills/video-workflow"
-    workflow = (workflow_dir / "SKILL.md").read_text(encoding="utf-8")
     autonomous = (workflow_dir / "references/autonomous-production.md").read_text(encoding="utf-8")
-    return workflow + "\n\n" + autonomous
+    return profile, autonomous
 
 
 class AgentEnv(dict[str, str]):
@@ -447,7 +452,8 @@ class OptionsAssembler:
                 )
         else:
             home = config.hermes_home / "sessions" / uuid4().hex
-        workflow = await asyncio.to_thread(_read_public_workflow)
+        profile, autonomous = await asyncio.to_thread(_read_native_workflow, project_cwd)
+        native_manifest = await asyncio.to_thread(profile.to_manifest, project_name)
         language = LOCALE_LANGUAGE_MAP.get(locale, "中文")
         prompt = (
             f"你是 ArcReel 的本地 Hermes 制作助手。用{language}与用户交流。\n"
@@ -455,13 +461,15 @@ class OptionsAssembler:
             "全部推理使用本机模型，图片和视频使用 ArcReel 配置的本地供应商，配音只使用免费本地引擎；任何故障均不得回退云端。\n"
             "项目数据只经 ArcReel MCP 工具读取和修改。先读取 get_workflow_plan，再执行用户授权的当前动作。\n"
             "用户只问状态或要求研究时只读。修改和生成保留已完成内容；遇到不确定在途任务先查询，不重复提交。\n"
-            "只使用本仓库 ArcReel 的原生工作流和工具，不接入外部工厂、旧技能流程或额外审核编排。\n"
+            "只使用本仓库 ArcReel 原生配置中的工作流、技能与子智能体，不接入外部工厂或旧技能流程。\n"
             "内容按 source → script_plan → 内容确认 → 正式脚本视觉提示推进；内容确认使用原生 confirm_script_review，"
             "视觉提示生成不改变已确认的正文、时长或资产引用。用户只授权准备草稿时，不写入正式项目。\n"
             "生成前通过 get_video_capabilities 和当前工具返回的供应商能力核实模式、时长、尺寸和参考图限制；"
             "缺项就报告，不静默删除引用，也不凭旧流程假定首尾帧或审核要求。\n"
             "图像、抽帧、媒体技术检查不能证明真实听审、连续播放或精确口型；没有相应证据时明确保留待核项。\n\n"
-            + workflow
+            + profile.bootstrap_prompt(project_name)
+            + "\n\n"
+            + autonomous
         )
         return HermesAgentOptions(
             config=config,
@@ -469,6 +477,7 @@ class OptionsAssembler:
             home=home,
             project_name=project_name,
             system_prompt=prompt,
+            native_profile=native_manifest,
             user_id=user_id,
             resume=resume_id,
             session_id=session_id,
