@@ -1,4 +1,8 @@
 MESSAGES = {
+    "autonomy_requires_local": "Sản xuất tự động cần môi trường Hermes cục bộ",
+    "autonomy_unavailable": "Dịch vụ sản xuất tự động chưa sẵn sàng; hãy thử lại sau",
+    "autonomy_run_not_found": "Không tìm thấy mục tiêu sản xuất tự động",
+    "autonomy_goal_conflict": "Dự án đã có mục tiêu tự động hoặc yêu cầu không khớp với mục tiêu hiện có",
     "episode_position_name": "Tập {position}",
     "episode_unlisted_name": "Tập chưa đặt tên",
     "episode_script_name": "Kịch bản của “{name}”",

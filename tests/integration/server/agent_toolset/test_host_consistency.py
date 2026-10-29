@@ -93,6 +93,11 @@ _ABSENT_REVISION = "sha256-v1:" + "0" * 64
 
 # 每条声明一份合法入参；新增声明须在此登记，否则参数化用例以 KeyError 失败。
 SAMPLE_ARGUMENTS: dict[str, dict[str, Any]] = {
+    "get_episode_production_status": {"episode_id": 1},
+    "select_image_version": {"resource_type": "storyboard", "resource_id": "E1S01", "version": 1},
+    "retry_artifact_download": {"task_id": "task-absent"},
+    "get_autonomous_production_goal": {"run_id": "0" * 32},
+    "stop_autonomous_production": {"run_id": "0" * 32},
     "set_storyboard_end_frame": {
         "script_file": "episode_1.json",
         "shot_id": "E1S01",
@@ -544,6 +549,12 @@ _TIME_DEPENDENT_RESULTS = frozenset({CREATE_PROJECT.name, CREATE_TIMELINE.name})
 # 样例入参下合法地返回 problem 的声明：测试项目缺少它们要找的对象或能力配置。其余声明在样例入参下必须成功。
 _PROBLEM_ON_SAMPLE = frozenset(
     {
+        # No indexed episode, image history, provider job or autonomous goal exists in this sample.
+        "get_episode_production_status",
+        "select_image_version",
+        "retry_artifact_download",
+        "get_autonomous_production_goal",
+        "stop_autonomous_production",
         # 样例项目没有设计好的目标尾图，且此兼容性套件未启用本地运行时。
         "set_storyboard_end_frame",
         "finish_local_session",

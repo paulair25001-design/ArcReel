@@ -31,11 +31,17 @@ from lib.speech.speech_artifact_provenance import build_video_duration_basis
 from server.auth import CurrentUserInfo, get_current_user
 from server.error_handlers import register_error_handlers
 from server.routers import versions
-from server.services.currency import typed_media_restore
+from server.services.currency import resource_versions, typed_media_restore
 from server.services.currency.artifact_version_restore import TypedMediaRestoreTarget
 from tests.auth_deps import AUTH_DEPENDENCIES
 from tests.factories import add_typed_video_version
-from tests.fakes import use_project_manager
+from tests.fakes import use_project_manager as install_project_manager
+
+
+def use_project_manager(monkeypatch, pm):
+    install_project_manager(monkeypatch, pm)
+    monkeypatch.setattr(resource_versions, "get_project_manager", lambda: pm)
+
 
 # 产物清单是读取已生成产物的唯一口径，还原路径要落到真实的 v8 项目目录才有意义。
 _MINIMAL_PROJECT = {
@@ -172,11 +178,11 @@ def test_non_typed_storyboard_restore_enters_version_commit_from_metadata_transa
 
     pm = _OrderedPM(tmp_path)
     use_project_manager(monkeypatch, pm)
-    monkeypatch.setattr(versions, "register_current_resource_artifact", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(resource_versions, "register_current_resource_artifact", lambda *_args, **_kwargs: False)
     project_path = pm.get_project_path("demo")
     current_file = project_path / "storyboards" / "scene_E1S01.png"
 
-    result = versions._restore_non_typed_version(
+    result = resource_versions.restore_image_resource_version_sync(
         versions=_OrderedVM(),
         resource_type="storyboards",
         project_name="demo",
@@ -347,7 +353,7 @@ class TestVersionsRouter:
         pm.save_script("demo", script, "episode_1.json", validate=False)
         use_project_manager(monkeypatch, pm)
 
-        versions._restore_non_typed_version(
+        resource_versions.restore_image_resource_version_sync(
             versions=manager,
             resource_type="storyboards",
             project_name="demo",
@@ -400,7 +406,7 @@ class TestVersionsRouter:
         pm = ProjectManager(tmp_path)
         use_project_manager(monkeypatch, pm)
 
-        versions._restore_non_typed_version(
+        resource_versions.restore_image_resource_version_sync(
             versions=manager,
             resource_type="characters",
             project_name="demo",
@@ -448,7 +454,7 @@ class TestVersionsRouter:
         pm = ProjectManager(tmp_path)
         use_project_manager(monkeypatch, pm)
 
-        versions._restore_non_typed_version(
+        resource_versions.restore_image_resource_version_sync(
             versions=manager,
             resource_type="characters",
             project_name="demo",
@@ -490,13 +496,13 @@ class TestVersionsRouter:
         pm = ProjectManager(tmp_path)
         use_project_manager(monkeypatch, pm)
         monkeypatch.setattr(
-            versions,
+            resource_versions,
             "forget_current_resource_artifact",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("manifest commit failed")),
         )
 
         with pytest.raises(RuntimeError, match="manifest commit failed"):
-            versions._restore_non_typed_version(
+            resource_versions.restore_image_resource_version_sync(
                 versions=manager,
                 resource_type="characters",
                 project_name="demo",
@@ -565,7 +571,7 @@ class TestVersionsRouter:
         use_project_manager(monkeypatch, pm)
 
         with pytest.raises(ValueError, match="exactly one episode binding"):
-            versions._restore_non_typed_version(
+            resource_versions.restore_image_resource_version_sync(
                 versions=manager,
                 resource_type="storyboards",
                 project_name="demo",
@@ -626,10 +632,10 @@ class TestVersionsRouter:
             raise RuntimeError("manifest commit failed")
 
         use_project_manager(monkeypatch, pm)
-        monkeypatch.setattr(versions, "forget_current_resource_artifact", _fail_registration)
+        monkeypatch.setattr(resource_versions, "forget_current_resource_artifact", _fail_registration)
 
         def _restore() -> None:
-            versions._restore_non_typed_version(
+            resource_versions.restore_image_resource_version_sync(
                 versions=manager,
                 resource_type="storyboards",
                 project_name="demo",
@@ -1244,7 +1250,7 @@ class TestVersionsRouter:
         project_path = Path(tempfile.gettempdir()) / "demo"
 
         with pytest.raises(BadRequestError) as exc:
-            versions._resolve_resource_path(
+            resource_versions.resolve_resource_path(
                 "characters",
                 "../../../../etc/passwd",
                 project_path,
@@ -1254,7 +1260,7 @@ class TestVersionsRouter:
     def test_resolve_resource_path_accepts_normal_id(self):
         project_path = Path(tempfile.gettempdir()) / "demo"
 
-        current_file, relative = versions._resolve_resource_path(
+        current_file, relative = resource_versions.resolve_resource_path(
             "characters",
             "Alice",
             project_path,
@@ -1446,7 +1452,7 @@ class TestVersionsRouter:
         use_project_manager(monkeypatch, pm)
 
         with pytest.raises(OSError, match="disk full"):
-            versions._restore_non_typed_version(
+            resource_versions.restore_image_resource_version_sync(
                 versions=VersionManager(project_path),
                 resource_type="storyboards",
                 project_name="demo",

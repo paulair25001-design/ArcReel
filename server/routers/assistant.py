@@ -297,6 +297,11 @@ async def delete_session(project_name: str, session_id: str, _t: Translator):
     try:
         service = get_assistant_service()
         await _validate_session_ownership(service, session_id, project_name, _t)
+        from server.agent_runtime.autonomous_production import get_autonomous_production
+
+        autonomous = get_autonomous_production()
+        if autonomous is not None:
+            await autonomous.stop_for_session(project_name, session_id)
         deleted = await service.delete_session(session_id)
         if not deleted:
             raise HTTPException(status_code=404, detail=_t("session_not_found", session_id=session_id))
@@ -391,6 +396,11 @@ async def interrupt_session(project_name: str, session_id: str, _t: Translator):
     try:
         service = get_assistant_service()
         meta = await _validate_session_ownership(service, session_id, project_name, _t)
+        from server.agent_runtime.autonomous_production import get_autonomous_production
+
+        autonomous = get_autonomous_production()
+        if autonomous is not None:
+            await autonomous.stop_for_session(project_name, session_id)
         return await service.interrupt_session(session_id, meta=meta)
     except HTTPException:
         raise

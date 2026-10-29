@@ -148,15 +148,15 @@ async def test_local_resolution_is_explicit_and_unsupported_saved_grid_or_video_
 
 
 @pytest.mark.asyncio
-async def test_l20_refuses_more_than_two_image_references_before_any_input_or_service_access(tmp_path: Path):
+async def test_l20_refuses_more_than_four_image_references_before_any_input_or_service_access(tmp_path: Path):
     backend = L20DirectImageBackend(get_l20_direct_config())
     request = ImageGenerationRequest(
         "a cube",
         tmp_path / "output.png",
-        [ReferenceImage(str(tmp_path / f"missing-{index}.png")) for index in range(3)],
+        [ReferenceImage(str(tmp_path / f"missing-{index}.png")) for index in range(5)],
         project_name="demo",
     )
-    with pytest.raises(L20DirectError, match="at most two references"):
+    with pytest.raises(L20DirectError, match="at most 4 references"):
         await backend.generate(request)
 
 

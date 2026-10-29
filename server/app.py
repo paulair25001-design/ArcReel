@@ -55,6 +55,7 @@ from lib.infra.path_safety import try_safe_join
 from lib.local_runtime.config import local_only_enabled
 from lib.project.project_migrations import cleanup_stale_backups, run_project_migrations
 from lib.script.source_loader.migration import migrate_project_source_encoding, migrate_project_source_encoding_once
+from server.agent_runtime.autonomous_production import AutonomousProductionService, bind_autonomous_production
 from server.auth import ensure_auth_password, get_current_user, warn_if_auth_disabled
 from server.cors_config import resolve_cors_policy
 from server.dependencies import require_project_migration_ok, require_valid_project_name
@@ -69,6 +70,7 @@ from server.routers import (
     asset_sheets,
     assets,
     assistant,
+    autonomous_production,
     catalog,
     characters,
     cost_estimation,
@@ -116,6 +118,7 @@ from server.services.project.episode_id_records import recorded_episode_ids_on
 from server.services.project.project_events import ProjectEventService
 from server.services.tasks.generation_tasks import execute_generation_task
 from server.services.tasks.resume_executor import execute_resume_video_task
+from server.services.tasks.worker_runtime import bind_generation_worker
 
 
 def assert_no_provider_secrets_in_environ() -> None:
@@ -363,6 +366,10 @@ async def _shutdown_local_application(app: FastAPI, *, trash_expiry: Any, catalo
     if catalog_sync is not None:
         await attempt("catalog sync", lambda: stop_official_sync(catalog_sync))
     await attempt("stall probe", lambda: stop_loop_stall_probe(stall_probe))
+    autonomous = getattr(app.state, "autonomous_production", None)
+    if autonomous is not None:
+        await attempt("autonomous production", autonomous.close)
+    bind_autonomous_production(None)
     assistant.assistant_service.session_manager.set_autonomous_turn_listener(None)
     event_service = getattr(app.state, "project_event_service", None)
     if event_service is not None:
@@ -372,6 +379,7 @@ async def _shutdown_local_application(app: FastAPI, *, trash_expiry: Any, catalo
     await attempt(
         "media drain and restoration", lambda: drain_and_finalize_local_media(worker.stop if worker else None)
     )
+    bind_generation_worker(None)
     await attempt("trial runs", shutdown_trial_runs)
     await attempt("HTTP client", shutdown_http_client)
     await attempt("database", close_db)
@@ -557,6 +565,7 @@ async def lifespan(app: FastAPI):
     worker = create_generation_worker()
     app.state.generation_worker = worker
     await worker.start()
+    bind_generation_worker(worker)
     logger.info("GenerationWorker 已启动")
 
     logger.info("启动 ProjectEventService...")
@@ -581,6 +590,11 @@ async def lifespan(app: FastAPI):
     local_shutdown = local_only_enabled()
     try:
         async with remote_mcp_host.run():
+            if local_shutdown:
+                autonomous = AutonomousProductionService(assistant.assistant_service)
+                app.state.autonomous_production = autonomous
+                bind_autonomous_production(autonomous)
+                await autonomous.start()
             yield
     finally:
         if local_shutdown:
@@ -618,6 +632,7 @@ async def lifespan(app: FastAPI):
         # 关停不取消在跑任务：worker.stop() 等在跑任务跑完再退出主循环。
         await worker.stop()
         logger.info("GenerationWorker 已停止")
+    bind_generation_worker(None)
     # 测试连接的 run 不可续跑：随事件循环消亡会把账本 pending 行永远留下，关停前按取消路径结算。
     from lib.custom_provider.endpoint_test import shutdown_trial_runs
 
@@ -723,6 +738,9 @@ async def request_logging_middleware(
 # 端点签名里的 CurrentUser 只表示「处理函数要用用户对象」，不承担授权职责。
 # 不挂依赖的两组另有说明，见下方分组注释。
 app.include_router(projects.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["项目管理"])
+app.include_router(
+    autonomous_production.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["自动制作"]
+)
 app.include_router(characters.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["角色管理"])
 app.include_router(scenes.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["场景管理"])
 app.include_router(props.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["道具管理"])

@@ -52,6 +52,7 @@ const RECORDINGS: Recording[] = [
   { file: "projects", method: "GET", path: "/api/v1/projects" },
   { file: "deleted-projects", method: "GET", path: "/api/v1/deleted-projects" },
   { file: "project-demo", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}` },
+  { file: "project-demo-autonomous-production-latest", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}/autonomous-production/latest` },
   // 工作区与集页的启动请求（项目事件流是 SSE，不录制，场景里按需替换）。
   { file: "tasks", method: "GET", path: "/api/v1/tasks?page_size=200" },
   { file: "project-demo-tasks", method: "GET", path: `/api/v1/tasks?page_size=200&project_name=${DEMO_PROJECT}` },

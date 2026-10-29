@@ -4,6 +4,7 @@ from lib.db.models.agent_credential import AgentAnthropicCredential
 from lib.db.models.api_call import ApiCall
 from lib.db.models.api_key import ApiKey
 from lib.db.models.asset import Asset, AssetDerivative
+from lib.db.models.autonomous_production import AutonomousProduction
 from lib.db.models.builtin_provider_model import BuiltinProviderModelState
 from lib.db.models.catalog_official_sync import CatalogOfficialSync
 from lib.db.models.catalog_user_entry import CatalogUserEntry
@@ -29,6 +30,7 @@ __all__ = [
     "ApiKey",
     "Asset",
     "AssetDerivative",
+    "AutonomousProduction",
     "BatchTask",
     "BuiltinProviderModelState",
     "CatalogOfficialSync",

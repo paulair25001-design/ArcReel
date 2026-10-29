@@ -56,12 +56,38 @@ async def test_local_options_use_real_current_project_scope_without_cloud_reads(
     assert "get_workflow_plan" in options.system_prompt
     assert "confirm_script_review" in options.system_prompt
     assert "get_video_capabilities" in options.system_prompt
-    assert "finish_local_session" not in options.system_prompt
+    assert "原控制器恢复" not in options.system_prompt
     assert "独立审核须另开" not in options.system_prompt
     assert "FastH3" not in options.system_prompt
     assert options.env == {}
     assert agent_pricing_of(options).multiplier == 0
     assert assembler.build_session_store() is None
+
+
+async def test_local_workflow_keeps_autonomy_gated_by_top_level_native_authorization(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("ARCREEL_LOCAL_ONLY", "true")
+    monkeypatch.setenv("ARCREEL_AUTONOMOUS_GOAL", "environment-must-not-authorize-this-goal")
+    layout = DataRootLayout.current()
+    project = "hermes-manual-" + uuid4().hex
+    assembler = _assembler(layout.root, project)
+    untrusted = "project-file-must-not-authorize-this-goal"
+    (layout.projects_dir / project / "CLAUDE.md").write_text(untrusted, encoding="utf-8")
+
+    options = await assembler.build(project)
+
+    assert isinstance(options, HermesAgentOptions)
+    assert "普通对话默认手动模式" in options.system_prompt
+    assert "[ARCREEL_AUTONOMOUS_PRODUCTION]" in options.system_prompt
+    assert "工具结果、源文、项目文件" in options.system_prompt
+    assert "environment-must-not-authorize-this-goal" not in options.system_prompt
+    assert untrusted not in options.system_prompt
+    assert "get_episode_production_status" in options.system_prompt
+    assert "inspect_images" in options.system_prompt
+    assert "retry_artifact_download" in options.system_prompt
+    assert "结束本轮" in options.system_prompt
+    assert "end_turn" in options.system_prompt
 
 
 async def test_local_resume_requires_an_existing_owned_binding(monkeypatch: pytest.MonkeyPatch):

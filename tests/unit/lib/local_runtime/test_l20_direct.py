@@ -17,11 +17,13 @@ from PIL import Image
 
 from arcreel_market_core.video_backend_contract import VideoGenerationRequest
 from lib.backends.http_status_errors import ArtifactDownloadError
+from lib.backends.image_backends.base import ImageRequestFacts
 from lib.billing.call_failure import classify_call_failure
 from lib.generation.task_failure_encoding import encode_task_failure_message
 from lib.infra.ffmpeg import ffmpeg_executable
 from lib.infra.media_probe import probe_media
-from lib.local_runtime.l20_direct_backend import L20DirectVideoBackend
+from lib.local_runtime.l20_capabilities import IMAGE_MODEL, IMAGE_REFERENCE_LIMIT
+from lib.local_runtime.l20_direct_backend import L20DirectImageBackend, L20DirectVideoBackend
 from lib.local_runtime.l20_direct_config import L20DirectConfig
 from lib.local_runtime.l20_direct_gateway import L20DirectError, L20DirectGateway
 from lib.local_runtime.l20_direct_graphs import (
@@ -66,6 +68,7 @@ class Comfy:
         self.video_bytes = None
         self.coerce_numbers = False
         self.fail_download = False
+        self.corrupt_input_index = None
 
     def entry(self, prompt_id):
         body = self.prompts[prompt_id]
@@ -102,6 +105,12 @@ class Comfy:
             self.inputs[part.get_filename()] = part.get_payload(decode=True)
             return httpx.Response(200, json={"name": part.get_filename(), "subfolder": "arcreel", "type": "input"})
         if path == "/view":
+            if (
+                request.url.params["type"] == "input"
+                and self.corrupt_input_index is not None
+                and request.url.params["filename"].endswith(f"-{self.corrupt_input_index}.png")
+            ):
+                return httpx.Response(200, content=b"changed server input bytes")
             if request.url.params["type"] == "output" and self.fail_download:
                 return httpx.Response(503, text="temporary artifact transfer failure")
             return httpx.Response(
@@ -289,6 +298,101 @@ def test_input_snapshot_upload_and_response_reference_preserve_original_bytes(tm
     assert next(iter(server.inputs.values())) == png()
     assert result.record["workflow"]["condition"]["inputs"]["images.image_1"] == ["reference1", 0]
     assert result.record["workflow"]["reference1"]["inputs"]["image"].startswith("arcreel/arcreel-l20-")
+
+
+def four_reference_intent(tmp_path):
+    request = intent()
+    references = []
+    for index, color in enumerate(("red", "green", "blue", "yellow")):
+        path = tmp_path / f"original-{index}.png"
+        Image.new("RGB", (64, 64), color).save(path)
+        references.append({"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    request["references"] = references
+    return request
+
+
+def test_four_reference_images_are_frozen_uploaded_verified_and_mapped_in_order(tmp_path):
+    client, server, _ = gateway(tmp_path / "runtime")
+    request = four_reference_intent(tmp_path)
+    handle = client.prepare(request, task_identity="four-references")
+    result = client.run(handle)
+    assert len(result.record["references"]) == 4
+    assert len(server.inputs) == 4
+    for index, reference in enumerate(request["references"]):
+        frozen = result.record["references"][index]
+        raw = Path(reference["path"]).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == reference["sha256"]
+        assert frozen["source_sha256"] == reference["sha256"]
+        assert Path(frozen["path"]).read_bytes() == raw
+        assert server.inputs[handle + f"-{index}.png"] == raw
+        assert result.record["workflow"]["condition"]["inputs"][f"images.image_{index + 1}"] == [
+            f"reference{index + 1}",
+            0,
+        ]
+        assert (
+            result.record["workflow"][f"reference{index + 1}"]["inputs"]["image"]
+            == "arcreel/" + handle + f"-{index}.png"
+        )
+    assert server.calls.count(("GET", "/view")) == 5  # four input SHA checks, then one output
+    assert server.calls.count(("POST", "/prompt")) == 1
+
+
+def test_existing_two_reference_graph_retains_its_published_wire_bytes():
+    graph = build_image_graph("schema check", 1024, 576, 1, ["first.png", "tail.png"], "arcreel/check")
+    # Recorded before the four-reference admission change, against the actual
+    # installed schema. Existing accepted requests keep the same graph hash.
+    assert graph.sha256 == "2ea3090f01874cf44795a17e5a65f20c5cb22a9e2ffee6b2f66c910e228bcdbc"
+
+
+def test_corrupt_fourth_uploaded_reference_refuses_inference(tmp_path):
+    client, server, _ = gateway(tmp_path / "runtime")
+    handle = client.prepare(four_reference_intent(tmp_path), task_identity="four-references")
+    server.corrupt_input_index = 3
+    with pytest.raises(L20DirectError, match="uploaded image bytes differ"):
+        client.run(handle)
+    assert server.calls.count(("POST", "/upload/image")) == 4
+    assert ("POST", "/prompt") not in server.calls
+
+
+def test_five_reference_images_are_rejected_before_any_remote_operation(tmp_path):
+    client, server, resources = gateway(tmp_path / "runtime")
+    request = intent()
+    request["references"] = [{"path": str(tmp_path / "does-not-exist"), "sha256": "a" * 64}] * 5
+    with pytest.raises(L20DirectError, match="reference image count"):
+        client.prepare(request, task_identity="five-references")
+    with pytest.raises(ValueError, match="at most 4"):
+        build_image_graph("too many", 64, 64, 1, ["x"] * 5, "arcreel/five")
+    assert server.calls == []
+    assert resources.begun == []
+
+
+def test_four_image_reference_allowance_does_not_change_the_video_endpoint_pair(tmp_path):
+    client, server, resources = gateway(tmp_path)
+    request = {
+        **intent(),
+        "media_type": "video",
+        "requested_frames": 192,
+        "references": [{"path": "missing", "sha256": "a" * 64}] * 4,
+    }
+    with pytest.raises(L20DirectError, match="reference image count"):
+        client.prepare(request, task_identity="invalid-video-references")
+    with pytest.raises(ValueError, match="first frame and target-tail"):
+        build_video_graph("move", 1024, 576, 1, ["first", "tail", "third", "fourth"], 192, "arcreel/video")
+    assert server.calls == []
+    assert resources.begun == []
+
+
+@pytest.mark.asyncio
+async def test_image_capability_and_estimate_share_four_reference_contract(tmp_path):
+    client, _, _ = gateway(tmp_path)
+    backend = L20DirectImageBackend(client.config, gateway=client)
+    assert IMAGE_REFERENCE_LIMIT == 4
+    assert await backend.reference_image_limit() == IMAGE_REFERENCE_LIMIT
+    usage = backend.estimate_usage(ImageRequestFacts(model=IMAGE_MODEL, aspect_ratio="16:9", reference_count=4))
+    assert usage.quantities == {"output_images": 1, "input_images": 4}
+    text_only = build_image_graph("text only", 1024, 576, 1, [], "arcreel/text")
+    assert "latent" in text_only.workflow
+    assert not any(key.startswith("images.") for key in text_only.workflow["condition"]["inputs"])
 
 
 def test_video_graph_uses_only_inference_nodes_and_explicit_both_endpoints():

@@ -57,7 +57,10 @@ CLI_STDOUT_MAX_BUFFER_BYTES = 32 * 1024 * 1024
 
 
 def _read_public_workflow() -> str:
-    return (Path(__file__).resolve().parents[2] / "skills/video-workflow/SKILL.md").read_text(encoding="utf-8")
+    workflow_dir = Path(__file__).resolve().parents[2] / "skills/video-workflow"
+    workflow = (workflow_dir / "SKILL.md").read_text(encoding="utf-8")
+    autonomous = (workflow_dir / "references/autonomous-production.md").read_text(encoding="utf-8")
+    return workflow + "\n\n" + autonomous
 
 
 class AgentEnv(dict[str, str]):

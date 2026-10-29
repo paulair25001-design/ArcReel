@@ -1,6 +1,28 @@
 import type enWorkflow from "@/i18n/en/workflow";
 
 export default {
+  "autonomy_active_title": "自动制作 · {{state}}",
+  "autonomy_title": "自动制作",
+  "autonomy_default_goal": "按本集现有内容自动制作至带旁白字幕的最终成片",
+  "autonomy_description": "给 Hermes 一个目标，由它持续调用本项目的原生制作工具和任务队列推进。",
+  "autonomy_authorization": "启动即授权 Hermes 在本项目内确认草稿、生成本地图像和视频、使用免费本地配音、剪辑导出，并在结束后恢复资源。不调用云模型、付费语音或发布作品。",
+  "autonomy_loading": "正在读取制作目标…",
+  "autonomy_read_failed": "暂时读不到当前目标，请刷新后再开始新目标。",
+  "autonomy_current_goal": "当前制作目标",
+  "autonomy_other_episode": "本项目已有另一集的自动制作目标正在执行。",
+  "autonomy_session_starting": "Hermes 正在启动，会话就绪后可从这里打开。",
+  "autonomy_open_session": "打开 Hermes 会话",
+  "autonomy_objective": "制作目标",
+  "autonomy_start": "开始自动制作",
+  "autonomy_stop": "停止自动制作",
+  "autonomy_state_pending": "启动中",
+  "autonomy_state_running": "制作中",
+  "autonomy_state_waiting": "等待任务",
+  "autonomy_state_stopping": "正在停止",
+  "autonomy_state_completed": "已完成",
+  "autonomy_state_stopped": "已停止",
+  "autonomy_state_attention": "需要处理",
+
   // ---- 面板外壳 ----
   'panel_title': '制作进度',
   'panel_blocker_count_one': '{{count}} 处需要修复',

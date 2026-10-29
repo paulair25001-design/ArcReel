@@ -178,7 +178,7 @@ class L20DirectImageBackend:
 
     async def generate(self, request: ImageGenerationRequest) -> ImageGenerationResult:
         if len(request.reference_images) > IMAGE_REFERENCE_LIMIT:
-            raise L20DirectError("The local image graph supports at most two references")
+            raise L20DirectError(f"The local image graph supports at most {IMAGE_REFERENCE_LIMIT} references")
         identity = str(request.output_path.absolute())
         size = image_canvas(request.aspect_ratio, request.image_size)
         intent = {

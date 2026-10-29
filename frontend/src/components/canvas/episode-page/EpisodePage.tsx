@@ -35,6 +35,7 @@ import {
   type EpisodeView,
   type EpisodeViewFacts,
 } from "./episode-view";
+import { AutonomousProduction } from "./AutonomousProduction";
 import { EpisodeHead } from "./EpisodeHead";
 import { EpisodeHeaderActions, EpisodeHeaderSlotProvider } from "./EpisodeHeaderActions";
 import { EpisodePageHeader } from "./EpisodePageHeader";
@@ -212,13 +213,16 @@ function EpisodePageContent({
           progress={
             // 演示态没有真实项目事实可投影，制作进度不挂载。
             demo ? null : (
-              <WorkflowPanel
-                projectName={projectName}
-                episode={episode}
-                onViewUnit={viewUnit}
-                onRegenerate={onRegenerate}
-                onAuthorPrompts={script ? openAuthorPrompts : undefined}
-              />
+              <>
+                <AutonomousProduction projectName={projectName} episode={episode} />
+                <WorkflowPanel
+                  projectName={projectName}
+                  episode={episode}
+                  onViewUnit={viewUnit}
+                  onRegenerate={onRegenerate}
+                  onAuthorPrompts={script ? openAuthorPrompts : undefined}
+                />
+              </>
             )
           }
           tabs={tabs}

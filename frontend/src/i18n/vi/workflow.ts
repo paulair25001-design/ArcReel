@@ -1,6 +1,28 @@
 import type enWorkflow from "@/i18n/en/workflow";
 
 export default {
+  "autonomy_active_title": "Sản xuất tự động · {{state}}",
+  "autonomy_title": "Sản xuất tự động",
+  "autonomy_default_goal": "Tự động tạo bản phim hoàn chỉnh có lời dẫn và phụ đề từ nội dung hiện có của tập này.",
+  "autonomy_description": "Giao một mục tiêu cho Hermes. Hermes tiếp tục bằng công cụ sản xuất và hàng đợi tác vụ gốc của dự án.",
+  "autonomy_authorization": "Khi bắt đầu, bạn cho phép Hermes xác nhận bản nháp, tạo hình ảnh và video cục bộ, dùng lời dẫn cục bộ miễn phí, biên tập, xuất phim và khôi phục tài nguyên khi hoàn tất. Không dùng mô hình đám mây, giọng nói trả phí hay xuất bản.",
+  "autonomy_loading": "Đang đọc mục tiêu sản xuất…",
+  "autonomy_read_failed": "Chưa đọc được mục tiêu hiện tại. Hãy làm mới trước khi bắt đầu mục tiêu khác.",
+  "autonomy_current_goal": "Mục tiêu sản xuất hiện tại",
+  "autonomy_other_episode": "Dự án đang có mục tiêu tự động cho một tập khác.",
+  "autonomy_session_starting": "Hermes đang khởi động. Bạn có thể mở phiên tại đây khi sẵn sàng.",
+  "autonomy_open_session": "Mở phiên Hermes",
+  "autonomy_objective": "Mục tiêu sản xuất",
+  "autonomy_start": "Bắt đầu sản xuất tự động",
+  "autonomy_stop": "Dừng sản xuất tự động",
+  "autonomy_state_pending": "Đang khởi động",
+  "autonomy_state_running": "Đang sản xuất",
+  "autonomy_state_waiting": "Đang chờ tác vụ",
+  "autonomy_state_stopping": "Đang dừng",
+  "autonomy_state_completed": "Đã hoàn tất",
+  "autonomy_state_stopped": "Đã dừng",
+  "autonomy_state_attention": "Cần xử lý",
+
   // ---- Khung bảng ----
   'panel_title': 'Tiến độ sản xuất',
   'panel_blocker_count_one': '{{count}} mục cần sửa',

@@ -1,4 +1,8 @@
 MESSAGES = {
+    "autonomy_requires_local": "Autonomous production requires the local Hermes runtime",
+    "autonomy_unavailable": "Autonomous production is not ready; try again shortly",
+    "autonomy_run_not_found": "The autonomous production objective was not found",
+    "autonomy_goal_conflict": "This project already has an autonomous objective, or the request conflicts with it",
     "episode_position_name": "Episode {position}",
     "episode_unlisted_name": "Untitled episode",
     "episode_script_name": "Script for “{name}”",

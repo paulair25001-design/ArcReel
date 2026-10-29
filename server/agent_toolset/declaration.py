@@ -195,6 +195,8 @@ async def invoke_declaration(
     scope: ProjectScope,
     caller: CallerContext,
     services: Services,
+    *,
+    goal_store: Any = None,
 ) -> ToolOutcome[Any]:
     """按声明校验请求、执行迁移阻断策略并调用 handler；两宿主共用这一个入口。"""
     request = _validated_request(declaration.request_model, arguments)
@@ -202,7 +204,12 @@ async def invoke_declaration(
         return ToolOutcome(problem=request)
     if isinstance(declaration.migration, Blocked) and (problem := await migration_gate(scope, services)) is not None:
         return ToolOutcome(problem=problem)
-    return await declaration.handler(ToolRequest(request), scope, caller, services)
+    from server.services.project.autonomous_stage import production_tool_admission
+
+    async with production_tool_admission(declaration.name, scope, caller, services, goal_store=goal_store) as problem:
+        if problem is not None:
+            return ToolOutcome(problem=problem)
+        return await declaration.handler(ToolRequest(request), scope, caller, services)
 
 
 async def invoke_unscoped_declaration(

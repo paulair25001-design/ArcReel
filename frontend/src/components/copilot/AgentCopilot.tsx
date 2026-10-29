@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { History, PanelRightClose, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -117,6 +117,19 @@ export function AgentCopilot() {
     },
     [switchSession],
   );
+
+  useEffect(() => {
+    const unsubscribe = useAssistantStore.subscribe((state, previous) => {
+      if (!state.requestedSessionOpen || state.requestedSessionOpen === previous.requestedSessionOpen) return;
+      const request = state.takeSessionOpenRequest();
+      if (request?.projectName === currentProjectName) handlePickSession(request.sessionId);
+    });
+    // A request may precede mounting this panel. A fresh panel starts in its
+    // conversation view; all later user requests use the normal picker.
+    const initial = useAssistantStore.getState().takeSessionOpenRequest();
+    if (initial?.projectName === currentProjectName) voidCall(switchSession(initial.sessionId));
+    return unsubscribe;
+  }, [currentProjectName, handlePickSession, switchSession]);
 
   const handleNewSession = useCallback(() => {
     setHistoryOpen(false);

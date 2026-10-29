@@ -135,6 +135,32 @@ describe("AgentCopilot", () => {
     });
   });
 
+  it("opens a user-requested production session through the existing picker and closes history", async () => {
+    useAssistantStore.setState({
+      currentSessionId: "manual-session",
+      sessions: [makeSession("manual-session", "手动会话"), makeSession("production-session", "自动制作会话")],
+    });
+    switchSession.mockImplementationOnce(async (id: string) => {
+      useAssistantStore.getState().setCurrentSessionId(id);
+    });
+    render(<AgentCopilot />);
+    fireEvent.click(screen.getByRole("button", { name: "会话历史" }));
+    expect(screen.getByRole("button", { name: "会话历史" })).toHaveAttribute("aria-pressed", "true");
+    act(() => useAssistantStore.getState().requestSessionOpen("demo", "production-session"));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "自动制作会话" })).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "会话历史" })).toHaveAttribute("aria-pressed", "false");
+    expect(useAssistantStore.getState().requestedSessionOpen).toBeNull();
+  });
+
+  it("discards a session-open request for another project", () => {
+    useAssistantStore.setState({ currentSessionId: "manual-session", sessions: [makeSession("manual-session", "手动会话")] });
+    render(<AgentCopilot />);
+    act(() => useAssistantStore.getState().requestSessionOpen("other-project", "private-session"));
+    expect(screen.getByRole("heading", { name: "手动会话" })).toBeInTheDocument();
+    expect(useAssistantStore.getState().currentSessionId).toBe("manual-session");
+    expect(useAssistantStore.getState().requestedSessionOpen).toBeNull();
+  });
+
   describe("questions", () => {
     it("takes the composer's place, answers a single and a multi choice by number keys, then submits", async () => {
       const user = userEvent.setup();

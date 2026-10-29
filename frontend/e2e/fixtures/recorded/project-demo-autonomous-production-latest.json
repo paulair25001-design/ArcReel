@@ -1,0 +1,8 @@
+{
+  "method": "GET",
+  "path": "/api/v1/projects/demo/autonomous-production/latest",
+  "status": 200,
+  "body": {
+    "goal": null
+  }
+}

@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Optional
@@ -870,12 +870,14 @@ class SessionManager:
         locale: str = DEFAULT_LOCALE,
         user_entry: dict[str, Any] | None = None,
         client_key: str | None = None,
+        on_session_prepared: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """Create a new session via send-first: start actor, send query, wait for sdk_session_id.
 
         ``user_entry`` 是本条用户消息的事件日志条目（写入点定型后的形态）；
         sdk_session_id 就绪后由 inbox 任务先写日志（seq 0）再放行等待，权威
         条目落在 ``managed.initial_user_log_entry`` 供受理响应回传。
+        本地 Hermes 的 ``on_session_prepared`` 在 init 身份与元数据持久后、首条 query 前执行。
         """
         if not SDK_AVAILABLE and not local_only_enabled():
             exc = RuntimeError("claude_agent_sdk is not installed")
@@ -985,6 +987,59 @@ class SessionManager:
                 await asyncio.gather(managed._process_task, return_exceptions=True)
             startup_stderr.stop()
 
+        async def _await_sdk_session_id() -> None:
+            # inbox 可能仍在持久化 actor 已上报的 init，不能仅据 actor 退出判定失败。
+            event_task = asyncio.create_task(managed.sdk_id_event.wait())
+            processor_task = managed._process_task
+            assert processor_task is not None
+            try:
+                await asyncio.wait(
+                    {event_task, processor_task},
+                    timeout=self._sdk_id_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                if not event_task.done():
+                    event_task.cancel()
+            if managed.sdk_id_event.is_set():
+                return
+            startup_exception = None
+            if processor_task.done() and not processor_task.cancelled():
+                try:
+                    startup_exception = processor_task.result()
+                except Exception as exc:
+                    startup_exception = exc
+            actor_task = actor.task
+            if actor_task is not None and actor_task.done():
+                logger.error("session actor 提前退出，未获得 sdk_session_id temp_id=%s", temp_id)
+            else:
+                logger.error("等待 sdk_session_id 超时 temp_id=%s", temp_id)
+            managed.cancel_pending_questions("session creation timed out")
+            sdk_stderr = startup_stderr.render()
+            await _cleanup_on_error()
+            if startup_exception is not None:
+                raise _make_agent_startup_error(
+                    startup_exception, project_name=project_name, session_id=None, sdk_stderr=sdk_stderr
+                ) from startup_exception
+            raise TimeoutError("SDK 会话创建超时")
+
+        if local_only_enabled() and on_session_prepared is not None:
+            await _await_sdk_session_id()
+            prepared_sid = managed.resolved_sdk_id
+            assert prepared_sid is not None
+            try:
+                if managed.initial_user_entry_error is not None:
+                    raise RuntimeError("新会话首条用户消息写入事件日志失败") from managed.initial_user_entry_error
+                await on_session_prepared(prepared_sid)
+            except BaseException:
+                managed.status = "error"
+                await _cleanup_on_error()
+                try:
+                    await self.meta_store.update_status(prepared_sid, "error")
+                except Exception:
+                    logger.exception("持久化 preparation error 状态失败 session_id=%s", prepared_sid)
+                raise
+
         # 首条消息不经排队列表：sdk_session_id 就绪后由 inbox 写入日志（seq 0）。
         # 登记 uuid 让 CLI 的回放认出自己，只关联 transcript 身份、不二次落库。
         cli_uuid = str(uuid4())
@@ -1003,51 +1058,7 @@ class SessionManager:
             await _cleanup_on_error()
             raise startup_error from exc
 
-        # Wait for sdk_session_id with timeout. Monitor the inbox processor rather
-        # than the actor task: actor may exit immediately after enqueueing init,
-        # while the processor still has to persist that already-observed session id.
-        # The done callback appends a completion notice after all actor messages, so processor
-        # completion is the safe proof that no queued init remains to be consumed.
-        event_task = asyncio.create_task(managed.sdk_id_event.wait())
-        processor_task = managed._process_task
-        assert processor_task is not None
-        watch_tasks: set[asyncio.Task] = {event_task, processor_task}
-        actor_task = actor.task
-        try:
-            await asyncio.wait(
-                watch_tasks,
-                timeout=self._sdk_id_timeout,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-        finally:
-            if not event_task.done():
-                event_task.cancel()
-
-        if not managed.sdk_id_event.is_set():
-            startup_exception = None
-            if processor_task.done() and not processor_task.cancelled():
-                try:
-                    startup_exception = processor_task.result()
-                except Exception as exc:
-                    # _process_inbox 正常完成时以返回值传递 actor 启动异常；它自身
-                    # 意外崩溃时 Task.result() 会重新抛出。两者都属于启动失败证据，
-                    # 必须先走下方统一清理，再包装为结构化 AgentStartupError。
-                    startup_exception = exc
-            if actor_task is not None and actor_task.done():
-                logger.error("session actor 提前退出，未获得 sdk_session_id temp_id=%s", temp_id)
-            else:
-                logger.error("等待 sdk_session_id 超时 temp_id=%s", temp_id)
-            managed.cancel_pending_questions("session creation timed out")
-            sdk_stderr = startup_stderr.render()
-            await _cleanup_on_error()
-            if startup_exception is not None:
-                raise _make_agent_startup_error(
-                    startup_exception,
-                    project_name=project_name,
-                    session_id=None,
-                    sdk_stderr=sdk_stderr,
-                ) from startup_exception
-            raise TimeoutError("SDK 会话创建超时")
+        await _await_sdk_session_id()
 
         startup_stderr.stop()
 
@@ -1371,6 +1382,7 @@ class SessionManager:
         user_entry: dict[str, Any] | None = None,
         client_key: str | None = None,
         resumable: bool = True,
+        on_session_prepared: Callable[[str], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         """把一条用户消息立即交给会话的 CLI，有轮次在跑时同样送入，由 CLI 排队或并入当前轮。
 
@@ -1382,6 +1394,7 @@ class SessionManager:
         ``locale`` is forwarded to ``get_or_connect``; it shapes the system
         prompt only when the revival starts a fresh session (see there).
         ``resumable`` 透传给 ``get_or_connect``，见其文档。
+        本地 Hermes 的准备回调在连接就绪、持有发送锁并查重后执行；失败时不登记或投递排队消息。
         """
         exited = self.sessions.get(session_id)
         if client_key is not None and exited is not None and exited.actor_exited:
@@ -1400,6 +1413,9 @@ class SessionManager:
                 accepted = await self._find_sent_message(managed, session_id, client_key)
                 if accepted is not None:
                     return accepted
+
+            if local_only_enabled() and on_session_prepared is not None:
+                await on_session_prepared(session_id)
 
             if user_entry is None:
                 user_entry = build_user_entry(

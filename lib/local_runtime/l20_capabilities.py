@@ -9,7 +9,7 @@ from arcreel_market_core.video_backend_contract import VideoAudioMode, VideoCapa
 
 IMAGE_MODEL = "qwen-image-2.1-int8"
 VIDEO_MODEL = "fasth3-v2-4step"
-IMAGE_REFERENCE_LIMIT = 2
+IMAGE_REFERENCE_LIMIT = 4
 IMAGE_SIZES = ("1K",)
 VIDEO_DURATIONS = tuple(range(1, 11))
 VIDEO_RESOLUTIONS = ("576p",)

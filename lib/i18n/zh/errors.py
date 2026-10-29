@@ -1,4 +1,8 @@
 MESSAGES = {
+    "autonomy_requires_local": "自动制作需要启用本地 Hermes 运行方式",
+    "autonomy_unavailable": "自动制作服务尚未就绪，请稍后重试",
+    "autonomy_run_not_found": "找不到这个自动制作目标",
+    "autonomy_goal_conflict": "当前项目已有自动制作目标，或请求与已有目标不一致",
     "episode_position_name": "第 {position} 集",
     "episode_unlisted_name": "未命名集",
     "episode_script_name": "「{name}」的剧本",

@@ -75,7 +75,7 @@ def build_image_graph(
     prompt: str, width: int, height: int, seed: int, references: list[str], prefix: str
 ) -> DirectGraph:
     if len(references) > IMAGE_REFERENCE_LIMIT:
-        raise ValueError("Qwen accepts at most two explicit image references")
+        raise ValueError(f"Qwen accepts at most {IMAGE_REFERENCE_LIMIT} explicit image references")
     graph = {
         "model": _node("UNETLoader", unet_name=IMAGE_CHECKPOINT, weight_dtype="default"),
         "text": _node(

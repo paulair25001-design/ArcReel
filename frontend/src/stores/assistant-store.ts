@@ -97,8 +97,11 @@ interface AssistantState {
    * 排队而非只留最新一条：同一批事件里的多条信号在 hook 消费前到达，后者会覆盖前者。
    */
   sessionResumeSignals: SessionResumeSignal[];
+  requestedSessionOpen: { projectName: string; sessionId: string } | null;
 
   // Actions
+  requestSessionOpen: (projectName: string, sessionId: string) => void;
+  takeSessionOpenRequest: () => { projectName: string; sessionId: string } | null;
   setSessions: (sessions: SessionMeta[]) => void;
   setCurrentSessionId: (id: string | null) => void;
   setSessionsLoading: (loading: boolean) => void;
@@ -227,6 +230,13 @@ export const useAssistantStore = create<AssistantState>((set, get) => {
     currentProject: null,
     isDraftSession: false,
     sessionResumeSignals: [],
+    requestedSessionOpen: null,
+    requestSessionOpen: (projectName, sessionId) => set({ requestedSessionOpen: { projectName, sessionId } }),
+    takeSessionOpenRequest: () => {
+      const request = get().requestedSessionOpen;
+      set({ requestedSessionOpen: null });
+      return request;
+    },
 
     setSessions: (sessions) => set({ sessions }),
     setCurrentSessionId: (id) => set({ currentSessionId: id }),

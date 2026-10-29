@@ -23,6 +23,7 @@ from PIL import Image, ImageOps
 
 from lib.backends.http_status_errors import ArtifactDownloadError
 from lib.infra.json_io import atomic_write_bytes, atomic_write_json
+from lib.local_runtime.l20_capabilities import IMAGE_REFERENCE_LIMIT
 from lib.local_runtime.l20_direct_config import L20DirectConfig
 from lib.local_runtime.l20_direct_graphs import (
     build_image_graph,
@@ -122,7 +123,7 @@ class L20DirectGateway:
                 raise L20DirectError("The L20 seed must be an unsigned 64-bit integer")
             frozen = []
             references = intent.get("references", [])
-            if (intent["media_type"] == "image" and len(references) > 2) or (
+            if (intent["media_type"] == "image" and len(references) > IMAGE_REFERENCE_LIMIT) or (
                 intent["media_type"] == "video" and len(references) != 2
             ):
                 raise L20DirectError("The graph cannot represent this reference image count")

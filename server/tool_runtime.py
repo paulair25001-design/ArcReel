@@ -221,6 +221,7 @@ from server.services.tasks.video_caps import (
     capability_request_facts,
     duration_constraints_payload,
 )
+from server.services.tasks.worker_runtime import ArtifactDownloadWorker
 from server.text_generation import (
     MAX_INSTRUCTIONS_LEN,
     SCOPE_REMOVED_MESSAGE,
@@ -287,6 +288,7 @@ class Services:
     workflow_planner: WorkflowPlanner
     capabilities: ConfigResolver
     queue: GenerationQueue = field(default_factory=get_generation_queue)
+    generation_worker: ArtifactDownloadWorker | None = None
 
     @classmethod
     def defaults(cls, projects: ProjectManager) -> Services:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from server.agent_toolset.autonomy_control import AUTONOMY_CONTROL_TOOLS
 from server.agent_toolset.content_read import CONTENT_READ_TOOLS
 from server.agent_toolset.declaration import AgentToolDeclaration, Blocked, ToolDeclaration
 from server.agent_toolset.edit_timelines import EDIT_TIMELINE_TOOLS
@@ -14,6 +15,7 @@ from server.agent_toolset.jianying_drafts import JIANYING_DRAFT_TOOLS
 from server.agent_toolset.local_runtime import LOCAL_RUNTIME_TOOLS
 from server.agent_toolset.media_generation import MEDIA_GENERATION_TOOLS
 from server.agent_toolset.orientation import ORIENTATION_TOOLS
+from server.agent_toolset.production import PRODUCTION_TOOLS
 from server.agent_toolset.project_entry import PROJECT_ENTRY_TOOLS
 from server.agent_toolset.project_trash import PROJECT_TRASH_TOOLS
 from server.agent_toolset.repair_channel import REPAIR_CHANNEL_TOOLS
@@ -25,6 +27,8 @@ from server.agent_toolset.workflow_completion import WORKFLOW_COMPLETION_TOOLS
 
 AGENT_TOOLSET: tuple[AgentToolDeclaration, ...] = (
     *LOCAL_RUNTIME_TOOLS,
+    *AUTONOMY_CONTROL_TOOLS,
+    *PRODUCTION_TOOLS,
     *PROJECT_ENTRY_TOOLS,
     *ORIENTATION_TOOLS,
     *GENERATION_BATCH_TOOLS,

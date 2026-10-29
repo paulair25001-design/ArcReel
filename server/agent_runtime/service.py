@@ -322,6 +322,7 @@ class AssistantService:
         images: list["ImageAttachment"] | None = None,
         locale: str = DEFAULT_LOCALE,
         client_key: str | None = None,
+        on_session_prepared: Callable[[str], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         """Unified send: create new session or send to existing one.
 
@@ -329,6 +330,9 @@ class AssistantService:
         才作为条目经 entry 流下发；同一 ``client_key`` 的重试若消息已入日志，响应携带权威条目
         （``entry``）。已被改写取代的会话不再受理消息（``SessionSupersededError``）。新会话：首条消息
         写入日志后才返回，响应携带权威条目。前端不渲染任何本地合成消息。
+
+        ``on_session_prepared`` 仅用于本地 Hermes：新会话在 init 身份持久后、首条 query 前执行；
+        续会话在冷恢复与消息查重后、排队前执行。新会话幂等命中时通知同一身份，不重复发送 query。
         """
         await asyncio.to_thread(self.pm.get_project_path, project_name)  # Validate project
 
@@ -349,24 +353,33 @@ class AssistantService:
                 await self.event_log.ensure_backfilled(
                     session_id, await self._aresolve_project_cwd_safe(meta.project_name)
                 )
+                message_kwargs: dict[str, Any] = {
+                    "meta": meta,
+                    "locale": locale,
+                    "user_entry": self._build_user_log_entry(prompt),
+                    "client_key": client_key,
+                }
+                if local_only_enabled() and on_session_prepared is not None:
+                    message_kwargs["on_session_prepared"] = on_session_prepared
                 accepted = await self._with_local_project_turn(
                     project_name,
                     lambda: self.session_manager.send_message(
                         session_id,
                         prompt,
-                        meta=meta,
-                        locale=locale,
-                        user_entry=self._build_user_log_entry(prompt),
-                        client_key=client_key,
+                        **message_kwargs,
                     ),
                 )
             return self._accepted_response(session_id, accepted)
         # New session
         if not client_key:
-            return await self._create_new_session(project_name, content, images, locale, client_key)
+            return await self._create_new_session(
+                project_name, content, images, locale, client_key, on_session_prepared=on_session_prepared
+            )
 
         existing = await self._find_accepted_new_session(client_key, project_name)
         if existing is not None:
+            if local_only_enabled() and on_session_prepared is not None:
+                await on_session_prepared(str(existing["session_id"]))
             return existing
 
         # 同一 client_key 的并发请求在此串行化：send_new_session 在途期间
@@ -376,8 +389,12 @@ class AssistantService:
             # 双重检查：等锁期间先行者可能已完成同一 client_key 的建会话。
             existing = await self._find_accepted_new_session(client_key, project_name)
             if existing is not None:
+                if local_only_enabled() and on_session_prepared is not None:
+                    await on_session_prepared(str(existing["session_id"]))
                 return existing
-            result = await self._create_new_session(project_name, content, images, locale, client_key)
+            result = await self._create_new_session(
+                project_name, content, images, locale, client_key, on_session_prepared=on_session_prepared
+            )
             self._record_new_session_client_key(client_key, result["session_id"])
             return result
 
@@ -450,17 +467,24 @@ class AssistantService:
         images: list["ImageAttachment"] | None,
         locale: str,
         client_key: str | None,
+        *,
+        on_session_prepared: Callable[[str], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         """实际创建新会话并投递首条消息，不涉及 client_key 幂等映射记账。"""
         prompt = self._prepare_content(content, images)
+        session_kwargs: dict[str, Any] = {
+            "locale": locale,
+            "user_entry": self._build_user_log_entry(prompt),
+            "client_key": client_key,
+        }
+        if local_only_enabled() and on_session_prepared is not None:
+            session_kwargs["on_session_prepared"] = on_session_prepared
         new_sdk_session_id = await self._with_local_project_turn(
             project_name,
             lambda: self.session_manager.send_new_session(
                 project_name,
                 prompt,
-                locale=locale,
-                user_entry=self._build_user_log_entry(prompt),
-                client_key=client_key,
+                **session_kwargs,
             ),
         )
         managed = self.session_manager.sessions.get(new_sdk_session_id)
