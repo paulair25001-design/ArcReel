@@ -117,6 +117,7 @@ def _reports(path: Path | None, session_id: str, model: str, profile_sha256: str
                     "inspections": inspections,
                     "profile_sha256": profile_sha256,
                     "report_sha256": hashlib.sha256(report.encode("utf-8")).hexdigest(),
+                    "report": report,
                 }
             )
     return reports
@@ -160,23 +161,28 @@ def _read_status(
             problem = "native_review_audit_unreadable"
     reviewed: list[dict[str, Any]] = []
     missing: list[dict[str, Any]] = []
+    selected_reports: dict[tuple[str, str], dict[str, Any]] = {}
     for selection in required:
-        match = next(
-            (
-                report
-                for report in reports
-                if "problem" not in selection
-                and any(
-                    row["unit_id"] == selection["unit_id"] and row["version"] == selection["version"]
-                    for row in report["inspections"]
-                )
-            ),
-            None,
-        )
-        if match is None:
+        matches = [
+            report
+            for report in reports
+            if "problem" not in selection
+            and any(
+                row["unit_id"] == selection["unit_id"] and row["version"] == selection["version"]
+                for row in report["inspections"]
+            )
+        ]
+        if not matches:
             missing.append({**selection, "problem": selection.get("problem", "native_review_report_missing")})
         else:
-            reviewed.append({**selection, **{key: value for key, value in match.items() if key != "inspections"}})
+            reviewed.append(
+                {
+                    **selection,
+                    **{key: value for key, value in matches[0].items() if key not in {"inspections", "report"}},
+                }
+            )
+            for report in matches:
+                selected_reports.setdefault((report["session_id"], report["report_sha256"]), report)
     return {
         "enabled": True,
         "ready": bool(required) and not missing and problem is None,
@@ -186,10 +192,13 @@ def _read_status(
         "reviewed_count": len(reviewed),
         "required": required,
         "reviewed": reviewed,
+        "reports": list(selected_reports.values()),
         "missing": missing,
         "action": "dispatch_agent" if missing or problem else None,
         "profile_sha256": profile_sha256,
-        "proof_digest": prefixed_canonical_json_digest({"required": required, "reviewed": reviewed}),
+        "proof_digest": prefixed_canonical_json_digest(
+            {"required": required, "reviewed": reviewed, "reports": list(selected_reports)}
+        ),
         **({"problem": problem} if problem else {}),
     }
 

@@ -200,6 +200,11 @@ async def test_repeated_resource_receipts_without_native_delivery_do_not_invent_
             "ready": False,
             "finalization": {"timestamp": sequence + 100, "source_sha256": str(sequence) * 64},
         }
+        rig.facts["native_review"] = {
+            "ready": True,
+            "reviewed": [{"unit_id": "E2S01", "version": 1}],
+            "reports": [{"report": f"Repeated review wording {sequence}"}],
+        }
         await rig.service.advance(rig.goal)
     goal = await rig.store.get(rig.goal["id"], "default")
     assert goal["state"] == "attention"

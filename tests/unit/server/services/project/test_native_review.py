@@ -103,7 +103,8 @@ async def test_completed_native_report_covers_current_versions_without_claiming_
     assert result["action"] is None
     assert {(row["unit_id"], row["version"]) for row in result["reviewed"]} == {("E2S01", 2), ("E2S02", 1)}
     assert all(row["session_id"] == "native-review-child" for row in result["reviewed"])
-    assert "建议修复" not in json.dumps(result, ensure_ascii=False)
+    assert "建议修复" in result["reports"][0]["report"]
+    assert all("report" not in row for row in result["reviewed"])
     assert "quality" not in result
     assert "approved" not in result
 
@@ -181,6 +182,57 @@ async def test_current_profile_change_invalidates_previous_instruction_receipt(r
     review_case["definition"].write_text("---\nname: review-footage\n---\nUpdated native instructions.\n")
 
     assert (await _read(review_case))["ready"] is False
+
+
+async def test_one_native_report_covering_multiple_units_is_returned_once_with_exact_text(review_case):
+    original = "E2S01 v2：部分可用。\n0.0–2.3秒可用；2.3秒起 FREEZE，建议重新生成。\nE2S02 v1：存疑，手部需要核查。\n"
+    row = _report(review_case, report=original)
+    _write_reports(review_case, [row, row])
+
+    result = await _read(review_case)
+    assert result["ready"] is True
+    assert result["reviewed_count"] == 2
+    assert len(result["reports"]) == 1
+    report = result["reports"][0]
+    assert report["session_id"] == "native-review-child"
+    assert report["report"] == original
+    assert report["report_sha256"] == hashlib.sha256(original.encode("utf-8")).hexdigest()
+    assert report["inspections"] == row["inspections"]
+
+
+async def test_report_for_only_unselected_historical_version_is_not_returned(review_case):
+    historical = _report(
+        review_case,
+        session_id="old-review",
+        report="Only historical v1 was inspected.",
+        inspections=[{"unit_id": "E2S01", "version": 1}],
+    )
+    current = _report(review_case, session_id="current-review")
+    _write_reports(review_case, [historical, current])
+
+    result = await _read(review_case)
+    assert result["ready"] is True
+    assert [row["session_id"] for row in result["reports"]] == ["current-review"]
+    assert result["reports"][0]["report"] == current["report"]
+
+
+async def test_later_native_concerns_for_same_current_version_remain_visible_alongside_previous_report(review_case):
+    first = _report(review_case, session_id="earlier-review", report="Earlier native observations.")
+    later = _report(
+        review_case,
+        session_id="later-review",
+        report="E2S01 v2 部分可用，2.3秒起卡帧，建议重生；存疑。",
+        inspections=[{"unit_id": "E2S01", "version": 2}],
+    )
+    _write_reports(review_case, [first])
+    before = await _read(review_case)
+    _write_reports(review_case, [first, later])
+
+    result = await _read(review_case)
+    assert result["ready"] is True
+    assert {row["session_id"] for row in result["reports"]} == {"earlier-review", "later-review"}
+    assert result["reports"][1]["report"] == later["report"]
+    assert result["proof_digest"] != before["proof_digest"]
 
 
 async def test_multiple_native_reports_and_partial_append_preserve_completed_coverage(review_case):
