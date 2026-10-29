@@ -80,6 +80,8 @@ Hermes 的 HTTP 资源屏障由本仓库的 `lib/local_runtime/resource_queue.py
 
 主推理和原生压缩的参数只读继承 `~/.hermes/config.yaml`：包括思考等级、采样、上下文与输出预算、压缩策略及总时限。本项目不再另设摘要预算、关闭主思考或猜测新的超时值，也不选择未指定的具名 profile。项目仍单独限制本地模型路由、ArcReel MCP 工具权限、免费本地语音与资源屏障，不把全局工具、旧制作技能或云端回退带进来；公共文件与全局 oMLX 设置不会被修改。达到长度上限、超时或未完整提交的摘要仍不当作成功，原始会话保留供原目标继续对账。
 
+Hermes ACP 的原生 Agent 工厂未传入 CLI 的思考与迭代参数，因此本项目在每次新建或恢复 Agent、首次请求前，用 Hermes 自身的配置解析器补齐 `reasoning_config` 和 `max_iterations`；子智能体沿原生构造继承主会话参数。不会为正在使用的 Agent 重置预算，也不覆盖采样、输出预算或压缩设置。
+
 公共配置要求压缩前 checkpoint 时，本项目为该隔离 Agent 安装 Hermes 原生 manager-level API v2。完整原始会话与 normalized evidence 保存在当前私有 home 的 `checkpoints/pre-compress/{SID}/{SHA}.json`；文件 `0600`、目录 `0700`，经原子发布、文件及目录 fsync、SHA 回读验证后才返回引用。摘要失败不删除原始会话或已有 checkpoint。这里只提供项目内的上下文检查点，不加载全局外部记忆插件、其状态工具或旧制作流程。
 
 本地配音原始执行回执保存在 `runtime/tts/receipts/`，版本记录绑定原始回执哈希及实际提交的 WAV。回执中的「未听审」状态保持原样。

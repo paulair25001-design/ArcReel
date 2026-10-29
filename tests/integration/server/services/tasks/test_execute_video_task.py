@@ -72,6 +72,7 @@ class TestGenerationTasks:
             async def generate_video_async(self, **kwargs):
                 await kwargs["before_submit"]()
                 provider_calls.append(kwargs)
+                return await super().generate_video_async(**kwargs)
 
         queue = type("Queue", (), {})()
         queue.persist_execution_checkpoint = AsyncMock()

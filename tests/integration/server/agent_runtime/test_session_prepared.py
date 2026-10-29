@@ -48,7 +48,9 @@ def _manager(tmp_path: Path, meta_store: SessionMetaStore, monkeypatch, client) 
 
 
 async def test_hermes_prepared_callback_waits_for_init_and_metadata_before_first_query(
-    tmp_path, meta_store, monkeypatch,
+    tmp_path,
+    meta_store,
+    monkeypatch,
 ):
     monkeypatch.setenv("ARCREEL_LOCAL_ONLY", "true")
     order: list[str] = []
@@ -80,7 +82,10 @@ async def test_hermes_prepared_callback_waits_for_init_and_metadata_before_first
 
 @pytest.mark.parametrize("exception_type", [RuntimeError, asyncio.CancelledError])
 async def test_failed_preparation_closes_hermes_without_sending_a_query(
-    tmp_path, meta_store, monkeypatch, exception_type,
+    tmp_path,
+    meta_store,
+    monkeypatch,
+    exception_type,
 ):
     monkeypatch.setenv("ARCREEL_LOCAL_ONLY", "true")
     client = _InitBeforeQueryClient([])
@@ -99,7 +104,9 @@ async def test_failed_preparation_closes_hermes_without_sending_a_query(
 
 
 async def test_legacy_client_keeps_send_first_and_does_not_invoke_hermes_preparation(
-    tmp_path, meta_store, monkeypatch,
+    tmp_path,
+    meta_store,
+    monkeypatch,
 ):
     monkeypatch.setenv("ARCREEL_LOCAL_ONLY", "false")
     client = FakeSDKClient(frames=[system_frame("init", session_id=SID)])
@@ -118,7 +125,9 @@ async def test_legacy_client_keeps_send_first_and_does_not_invoke_hermes_prepara
 
 
 async def test_stop_after_existing_session_connect_prevents_queue_registration_and_query(
-    tmp_path, meta_store, monkeypatch,
+    tmp_path,
+    meta_store,
+    monkeypatch,
 ):
     monkeypatch.setenv("ARCREEL_LOCAL_ONLY", "true")
     client = _InitBeforeQueryClient([])
@@ -142,7 +151,9 @@ async def test_stop_after_existing_session_connect_prevents_queue_registration_a
     monkeypatch.setattr(manager, "get_or_connect", connect_then_stop)
     try:
         with pytest.raises(RuntimeError, match="goal stopped before admission"):
-            await manager.send_message(SID, "continue goal", client_key="stopped-delivery", on_session_prepared=admission)
+            await manager.send_message(
+                SID, "continue goal", client_key="stopped-delivery", on_session_prepared=admission
+            )
         assert len(client.sent_queries) == existing_queries
         assert manager.sessions[SID].queued_messages == []
         assert "stopped-delivery" not in manager.sessions[SID].sent_client_keys
@@ -223,10 +234,16 @@ async def test_service_preparation_reuses_same_client_key_identity_without_secon
     service.event_log_store = SimpleNamespace(find_new_session_by_client_key=find_new, find_by_client_key=find_by)
     monkeypatch.setattr(service, "_with_local_project_turn", turn)
 
-    first = await service.send_or_create("demo", "make episode", client_key="goal-delivery", on_session_prepared=prepared)
-    second = await service.send_or_create("demo", "make episode", client_key="goal-delivery", on_session_prepared=prepared)
+    first = await service.send_or_create(
+        "demo", "make episode", client_key="goal-delivery", on_session_prepared=prepared
+    )
+    second = await service.send_or_create(
+        "demo", "make episode", client_key="goal-delivery", on_session_prepared=prepared
+    )
     service._new_session_client_keys.clear()
-    recovered = await service.send_or_create("demo", "make episode", client_key="goal-delivery", on_session_prepared=prepared)
+    recovered = await service.send_or_create(
+        "demo", "make episode", client_key="goal-delivery", on_session_prepared=prepared
+    )
 
     assert first["session_id"] == second["session_id"] == recovered["session_id"] == SID
     assert len(new_calls) == 1

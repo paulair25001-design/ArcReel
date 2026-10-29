@@ -30,7 +30,7 @@ def test_installed_mcp_business_errors_do_not_trip_transport_or_observe_error_pi
     home = config.hermes_home / "attempt"
     prepare_hermes_home(config, home, public_config_path=public)
     runtime = Path(__file__).resolve().parents[4] / "server/agent_runtime"
-    script = r'''
+    script = r"""
 import asyncio,base64,concurrent.futures,hashlib,importlib,importlib.util,io,json,os,socket,sys,types
 from pathlib import Path
 def deny_network(*args,**kwargs):raise AssertionError("This test forbids real network access")
@@ -152,7 +152,7 @@ assert "arcreel" in native._server_breaker_opened_at
 rpc_thread.shutdown(wait=True)
 print(json.dumps({"business_sequences":[3,4],"subsequent_success_reached":True,"business_problem_preserved":True,
     "error_pixels_not_observed":True,"valid_pixels_reached_sdk":True,"transport_three_failure_breaker":True}))
-'''
+"""
     result = subprocess.run(
         [config.hermes_python, "-c", script, str(runtime)],
         env=build_hermes_environment(config, home),

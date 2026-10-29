@@ -50,11 +50,11 @@ def test_installed_native_children_keep_profile_permissions_pixels_and_public_pa
     home = config.hermes_home / "attempt"
     prepare_hermes_home(config, home, agent_tools=True, mcp={}, public_config_path=public)
     runtime = Path(__file__).resolve().parents[4] / "server/agent_runtime"
-    manifest = load_hermes_native_profile("narration", profile_root=runtime.parents[1] / "agent_runtime_profile").to_manifest(
-        "demo"
-    )
+    manifest = load_hermes_native_profile(
+        "narration", profile_root=runtime.parents[1] / "agent_runtime_profile"
+    ).to_manifest("demo")
     (home / "native-profile.json").write_text(json.dumps(manifest, ensure_ascii=False))
-    script = r'''
+    script = r"""
 import asyncio,base64,hashlib,importlib,importlib.util,io,json,os,socket,sys,threading,types
 from pathlib import Path
 def forbidden(*args,**kwargs):raise AssertionError("Real network is forbidden")
@@ -212,7 +212,7 @@ try:
         "nested_tool_refused":True,"preload_skill":True,"contact_sheet_on_child_wire":True,"parent_report_only":True,
         "spill_page_and_denial_on_child_wire":True,"sdk_requests":len(sent)}))
 finally:parent.close()
-'''
+"""
     environment = build_hermes_environment(config, home)
     result = subprocess.run(
         [config.hermes_python, "-c", script, str(runtime)],

@@ -38,7 +38,7 @@ def test_upgrade_enforces_user_project_scope_and_downgrade_is_local(alembic_cfg,
         assert indexes["ix_autonomous_production_user_id"]["column_names"] == ["user_id"]
         foreign_keys = inspect.get_foreign_keys("autonomous_production")
         assert foreign_keys[0]["referred_table"] == "users"
-        assert foreign_keys[0]["options"].get("ondelete") is None
+        assert foreign_keys[0].get("options", {}).get("ondelete") is None
         insert = sa.text(
             "INSERT INTO autonomous_production (id,user_id,project_name,episode_id,objective,client_key,state,"
             "payload_json,created_at,updated_at) VALUES (:id,:user,:project,2,'Finish episode',:key,:state,"

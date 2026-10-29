@@ -54,11 +54,25 @@ async def runner_rig(db_factory, monkeypatch):
     restored = []
     stats = {"queued": 0, "running": 0}
     facts = {
-        "project": "runner-project", "episode_id": 2, "script_file": "episode_2.json", "script_state": "current",
-        "units": [{"unit_id": "E2S01", "text": "原文", "declared_seconds": 6,
-                   "audio": {"status": "current", "actual_seconds": 5}, "first": {"status": "missing"},
-                   "video": {"status": "missing"}, "end_frame": {"present": False}}],
-        "active_tasks": [], "failed_tasks": [], "timelines": [], "goal_complete_technical": False,
+        "project": "runner-project",
+        "episode_id": 2,
+        "script_file": "episode_2.json",
+        "script_state": "current",
+        "units": [
+            {
+                "unit_id": "E2S01",
+                "text": "原文",
+                "declared_seconds": 6,
+                "audio": {"status": "current", "actual_seconds": 5},
+                "first": {"status": "missing"},
+                "video": {"status": "missing"},
+                "end_frame": {"present": False},
+            }
+        ],
+        "active_tasks": [],
+        "failed_tasks": [],
+        "timelines": [],
+        "goal_complete_technical": False,
         "resource": {"owner_project": "runner-project", "state": "restored", "original_service_restored": True},
     }
 
@@ -97,14 +111,21 @@ async def runner_rig(db_factory, monkeypatch):
         facts["resource"].update(state="restored", original_service_restored=True)
 
     assistant = SimpleNamespace(
-        session_manager=SimpleNamespace(sessions=residents), event_log_store=SimpleNamespace(find_by_client_key=find_entry),
-        get_session=get_session, send_or_create=send, interrupt_session=interrupt,
+        session_manager=SimpleNamespace(sessions=residents),
+        event_log_store=SimpleNamespace(find_by_client_key=find_entry),
+        get_session=get_session,
+        send_or_create=send,
+        interrupt_session=interrupt,
     )
 
     def service():
         return driver.AutonomousProductionService(
-            assistant, store=store, queue=SimpleNamespace(get_task_stats=queue_stats),
-            facts_reader=read_facts, finalizer=finish, poll_seconds=60,
+            assistant,
+            store=store,
+            queue=SimpleNamespace(get_task_stats=queue_stats),
+            facts_reader=read_facts,
+            finalizer=finish,
+            poll_seconds=60,
         )
 
     goal = await store.create("runner-project", 2, "Finish the native episode", "default", "authorized-runner-goal")
@@ -113,10 +134,25 @@ async def runner_rig(db_factory, monkeypatch):
         for listener in tuple(listeners):
             listener("runner-project", "worker", ({"action": action},))
 
-    return SimpleNamespace(store=store, goal=goal, calls=calls, metas=metas, residents=residents, restored=restored,
-                           stats=stats, facts=facts, interruptions=interruptions, service=service, event=event,
-                           listeners=listeners, waiting=waiting, stopped=stopped, interrupted=interrupted,
-                           scanned=scanned, deliveries=deliveries)
+    return SimpleNamespace(
+        store=store,
+        goal=goal,
+        calls=calls,
+        metas=metas,
+        residents=residents,
+        restored=restored,
+        stats=stats,
+        facts=facts,
+        interruptions=interruptions,
+        service=service,
+        event=event,
+        listeners=listeners,
+        waiting=waiting,
+        stopped=stopped,
+        interrupted=interrupted,
+        scanned=scanned,
+        deliveries=deliveries,
+    )
 
 
 async def test_runner_event_wake_and_restart_reconcile_the_same_durable_session(runner_rig):

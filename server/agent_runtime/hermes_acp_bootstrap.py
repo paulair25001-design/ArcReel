@@ -255,6 +255,13 @@ def main() -> None:
         raise RuntimeError("ArcReel native transcript checkpoint is unavailable")
     checkpoint = importlib.util.module_from_spec(checkpoint_spec)
     checkpoint_spec.loader.exec_module(checkpoint)
+    public_spec = importlib.util.spec_from_file_location(
+        "arcreel_hermes_public_agent", Path(__file__).with_name("hermes_public_agent.py")
+    )
+    if public_spec is None or public_spec.loader is None:
+        raise RuntimeError("Hermes public agent parameter adapter is unavailable")
+    public_agent = importlib.util.module_from_spec(public_spec)
+    public_spec.loader.exec_module(public_agent)
     native_manifest = None
     dispatcher_type = None
     manifest_path = os.environ.get("ARCREEL_HERMES_NATIVE_PROFILE")
@@ -305,6 +312,7 @@ def main() -> None:
                 logger=logging.getLogger(__name__), timeout=30, thread_name="arcreel-mcp-discovery"
             )
             agent = super()._make_agent(*args, **kwargs)
+            public_agent.apply_public_agent_parameters(agent)
             # Capture the already-installed inference lease, rather than replacing it.
             vision.install_http(importlib.import_module("httpx"))
             require_local_agent_route(

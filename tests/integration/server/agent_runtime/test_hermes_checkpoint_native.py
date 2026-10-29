@@ -37,7 +37,7 @@ def test_native_required_checkpoint_precedes_summary_and_survives_failed_compres
     home = config.hermes_home / "attempt"
     prepare_hermes_home(config, home, public_config_path=public)
     runtime = Path(__file__).resolve().parents[4] / "server/agent_runtime"
-    script = r'''
+    script = r"""
 import copy, hashlib, importlib.util, json, os, socket, sys
 from pathlib import Path
 def deny_network(*args, **kwargs):raise AssertionError("No real network is permitted")
@@ -111,7 +111,7 @@ try:
     print(json.dumps({"required":True,"private_snapshot":True,"raw_and_evidence_preserved":True,
         "failed_summary_preserved_history":True,"native_success":True,"summary_requests":len(requests)}))
 finally:agent.close()
-'''
+"""
     result = subprocess.run(
         [config.hermes_python, "-c", script, str(runtime)],
         cwd=tmp_path,

@@ -65,7 +65,9 @@ async def test_blank_authorization_fields_rejected_before_dispatch(autonomous_go
     service.create.assert_not_called()
 
 
-async def test_retry_routes_exact_owned_revision_without_exposing_recovery_payload(autonomous_goal_api_client, monkeypatch):
+async def test_retry_routes_exact_owned_revision_without_exposing_recovery_payload(
+    autonomous_goal_api_client, monkeypatch
+):
     http, store = autonomous_goal_api_client
     goal = await store.create("one", 2, "Finish episode", "owner", "authorization")
     await store.claim(goal["id"], "driver", 60, user_id="owner")

@@ -180,6 +180,13 @@ def test_actual_mcp_pixels_reach_local_wire_and_audit_without_content_leak(
             json={
                 "model": "local-qwen",
                 "messages": [{"role": "tool", "content": result["content"]}],
+                "enable_thinking": True,
+                "top_k": 40,
+                "chat_template_kwargs": {
+                    "preserve_thinking": True,
+                    "reasoning_effort": "xhigh",
+                    "private_option": "never-record-template-private",
+                },
             },
         )
         # Already delivered pixels may be compressed from later requests.
@@ -197,6 +204,11 @@ def test_actual_mcp_pixels_reach_local_wire_and_audit_without_content_leak(
     request = next(row for row in receipt if row["event"] == "request")
     assert request["image_count"] == 1
     assert request["required_images_present"] is True
+    assert request["generation_parameters"] == {
+        "enable_thinking": True,
+        "top_k": 40,
+        "chat_template_kwargs": {"preserve_thinking": True, "reasoning_effort": "xhigh"},
+    }
     assert request["images"] == [
         {"role": "tool", "mime_type": "image/jpeg", "bytes": len(_IMAGE), "sha256": hashlib.sha256(_IMAGE).hexdigest()}
     ]
@@ -222,6 +234,7 @@ def test_actual_mcp_pixels_reach_local_wire_and_audit_without_content_leak(
     assert [row for row in _receipt(tmp_path) if row["event"] == "observed_images"] == observed
     text = (tmp_path / "vision-wire-audit.jsonl").read_text()
     assert "never-record-this" not in text
+    assert "never-record-template-private" not in text
     assert base64.b64encode(_IMAGE).decode() not in text
     assert (tmp_path / "vision-wire-audit.jsonl").stat().st_mode & 0o777 == 0o600
 

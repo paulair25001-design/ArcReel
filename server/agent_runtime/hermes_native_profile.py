@@ -307,9 +307,7 @@ class HermesNativeProfile:
         )
 
 
-def load_hermes_native_profile(
-    content_mode: ContentMode, *, profile_root: Path | None = None
-) -> HermesNativeProfile:
+def load_hermes_native_profile(content_mode: ContentMode, *, profile_root: Path | None = None) -> HermesNativeProfile:
     """Snapshot the same mode projection used by native profile materialization."""
     root = (profile_root if profile_root is not None else agent_profile_dir()).resolve(strict=True)
     mapping = resolve_profile_files_for_mode(root, content_mode)

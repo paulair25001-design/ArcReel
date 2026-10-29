@@ -54,7 +54,7 @@ def _generation_parameters(payload: Any) -> dict[str, Any]:
         return {}
     result = {
         key: payload[key]
-        for key in ("max_tokens", "max_completion_tokens", "temperature", "top_p")
+        for key in ("max_tokens", "max_completion_tokens", "temperature", "top_p", "top_k", "enable_thinking")
         if key in payload and type(payload[key]) in (int, float, bool)
     }
     levels = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
@@ -65,6 +65,8 @@ def _generation_parameters(payload: Any) -> dict[str, Any]:
         result["chat_template_kwargs"] = {
             key: template[key] for key in ("enable_thinking", "preserve_thinking") if type(template.get(key)) is bool
         }
+        if isinstance(template.get("reasoning_effort"), str) and template["reasoning_effort"] in levels:
+            result["chat_template_kwargs"]["reasoning_effort"] = template["reasoning_effort"]
     reasoning = payload.get("reasoning")
     if isinstance(reasoning, dict):
         selected = {"enabled": reasoning["enabled"]} if type(reasoning.get("enabled")) is bool else {}

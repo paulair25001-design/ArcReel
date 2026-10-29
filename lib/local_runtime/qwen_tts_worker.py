@@ -228,7 +228,9 @@ def main() -> int:
         if sys.platform != "darwin":
             raise ValueError("the installed local MLX speech engine requires macOS")
         sandbox = _local("/usr/bin/sandbox-exec")
-        from resource_queue import speech_lease
+        # This stdlib-only worker runs by file in the offline engine's Python;
+        # its sibling resource_queue is project code, not an installed package.
+        speech_lease = importlib.import_module("resource_queue").speech_lease
 
         env = offline_environment(request)
         env["ARCREEL_TTS_SANDBOX_CHILD"] = "1"
