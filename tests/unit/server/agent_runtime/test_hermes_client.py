@@ -124,6 +124,10 @@ def _options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, resume: str | N
         hermes_mcp_token="arc-private-test",
         hermes_api_key="omlx-private-test",
     )
+    user_home = tmp_path / "user-home"
+    (user_home / ".hermes").mkdir(parents=True, exist_ok=True)
+    (user_home / ".hermes/config.yaml").write_text("{}")
+    monkeypatch.setattr(Path, "home", lambda: user_home)
     cwd = tmp_path / "project"
     cwd.mkdir()
     return HermesAgentOptions(

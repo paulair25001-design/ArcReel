@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import json
 import os
 import signal
@@ -12,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+import yaml
+
 from lib.infra.json_io import atomic_write_json
 from lib.local_runtime.config import RESOURCE_QUEUE_HELPER, LocalRuntimeConfig
 
@@ -19,6 +22,123 @@ LOCAL_HERMES_PROVIDER = "omlx"
 MAX_PROCESS_OUTPUT_BYTES = 8 * 1024 * 1024
 _HOME_MARKER = ".arcreel-local-hermes"
 _ENV_ALLOWLIST = ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR")
+_PUBLIC_MODEL_FIELDS = ("context_length", "max_tokens", "temperature", "top_p", "top_k", "min_p", "reasoning_effort")
+_PUBLIC_AGENT_FIELDS = ("max_turns", "reasoning_effort", "local_stream_stale_timeout")
+_PUBLIC_COMPRESSION_FIELDS = (
+    "enabled",
+    "checkpoint_required",
+    "progress_notices",
+    "threshold",
+    "threshold_tokens",
+    "target_ratio",
+    "tail_mode",
+    "protect_first_n",
+    "protect_last_n",
+    "min_tail_user_messages",
+    "max_attempts",
+    "context_timeout_seconds",
+    "context_total_ceiling_seconds",
+    "in_place",
+    "idle_compact_after_seconds",
+    "proactive_prune_tokens",
+    "proactive_prune_min_result_chars",
+    "proactive_prune_min_reclaim_tokens",
+)
+_PUBLIC_BUDGET_MAPS = ("model_headroom_tokens", "model_threshold_tokens", "model_thresholds")
+
+
+def _public_extra_body(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    result = {
+        key: value[key]
+        for key in (
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "presence_penalty",
+            "frequency_penalty",
+            "repetition_penalty",
+            "thinking_budget",
+        )
+        if type(value.get(key)) in (int, float)
+    }
+    result.update({key: value[key] for key in ("enable_thinking", "preserve_thinking") if type(value.get(key)) is bool})
+    template = value.get("chat_template_kwargs")
+    if isinstance(template, dict):
+        selected = {
+            key: template[key] for key in ("enable_thinking", "preserve_thinking") if type(template.get(key)) is bool
+        }
+        effort = template.get("reasoning_effort")
+        if isinstance(effort, str) and effort in {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
+            selected["reasoning_effort"] = effort
+        if type(template.get("thinking_budget")) is int:
+            selected["thinking_budget"] = template["thinking_budget"]
+        if selected:
+            result["chat_template_kwargs"] = selected
+    return result
+
+
+def read_public_hermes_parameters(path: Path | None = None) -> dict[str, Any]:
+    """Read only shared inference knobs, excluding identities, routes and credentials."""
+    source = path if path is not None else Path.home() / ".hermes/config.yaml"
+    if not source.is_file():
+        return {}
+    loaded = yaml.safe_load(source.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError("Public Hermes configuration must be a mapping")
+    result: dict[str, Any] = {}
+    for section, fields in (
+        ("model", _PUBLIC_MODEL_FIELDS),
+        ("agent", _PUBLIC_AGENT_FIELDS),
+        ("compression", _PUBLIC_COMPRESSION_FIELDS),
+    ):
+        values = loaded.get(section)
+        if isinstance(values, dict):
+            result[section] = {key: values[key] for key in fields if type(values.get(key)) in (str, int, float, bool)}
+    compression = loaded.get("compression")
+    if isinstance(compression, dict):
+        for key in _PUBLIC_BUDGET_MAPS:
+            value = compression.get(key)
+            if isinstance(value, dict):
+                result.setdefault("compression", {})[key] = {
+                    name: budget
+                    for name, budget in value.items()
+                    if isinstance(name, str) and type(budget) in (int, float)
+                }
+        micro = compression.get("micro_compact")
+        if isinstance(micro, dict):
+            result.setdefault("compression", {})["micro_compact"] = {
+                key: value
+                for key, value in micro.items()
+                if key in {"enabled", "threshold_tokens", "target_tokens", "protect_last_n", "max_tokens"}
+                and type(value) in (int, float, bool)
+            }
+    auxiliary = loaded.get("auxiliary")
+    summary = auxiliary.get("compression") if isinstance(auxiliary, dict) else None
+    if isinstance(summary, dict):
+        selected = {
+            key: summary[key]
+            for key in ("reasoning_effort", "max_output_tokens", "context_length", "timeout")
+            if type(summary.get(key)) in (str, int, float, bool)
+        }
+        extra = _public_extra_body(summary.get("extra_body"))
+        if extra:
+            selected["extra_body"] = extra
+        result["auxiliary_compression"] = selected
+    providers = loaded.get("providers")
+    local_provider = providers.get(LOCAL_HERMES_PROVIDER) if isinstance(providers, dict) else None
+    if isinstance(local_provider, dict):
+        provider: dict[str, Any] = {}
+        extra = _public_extra_body(local_provider.get("extra_body"))
+        if extra:
+            provider["extra_body"] = extra
+        capabilities = local_provider.get("capabilities")
+        if isinstance(capabilities, dict) and type(capabilities.get("reasoning")) is bool:
+            provider["capabilities"] = {"reasoning": capabilities["reasoning"]}
+        result["provider"] = provider
+    return copy.deepcopy(result)
 
 
 class LocalProcessError(RuntimeError):
@@ -101,6 +221,7 @@ def prepare_hermes_home(
     mcp: Mapping[str, Any] | None = None,
     max_output_tokens: int | None = None,
     system_prompt: str | None = None,
+    public_config_path: Path | None = None,
 ) -> None:
     """Write a private ArcReel-owned profile without copying user credentials."""
     del cwd
@@ -119,6 +240,7 @@ def prepare_hermes_home(
         raise ValueError("Hermes runtime directory is not owned by ArcReel")
     target.mkdir(parents=True, exist_ok=True, mode=0o700)
     marker.write_text("arcreel-local-hermes/v1\n", encoding="utf-8")
+    public = read_public_hermes_parameters(public_config_path)
     local_route = {"provider": LOCAL_HERMES_PROVIDER, "model": config.hermes_model, "base_url": config.hermes_base_url}
     servers: dict[str, Any] = {}
     if agent_tools:
@@ -134,38 +256,36 @@ def prepare_hermes_home(
             }
         else:
             raise ValueError("Hermes Agent requires an explicit ArcReel MCP token")
-    agent: dict[str, Any] = {"verbose": False, "image_input_mode": "native", "max_turns": 150 if agent_tools else 2}
+    agent: dict[str, Any] = {**public.get("agent", {}), "verbose": False, "image_input_mode": "native"}
+    if not agent_tools:
+        agent["max_turns"] = 2
     if system_prompt:
         agent["system_prompt"] = system_prompt
     payload = {
         "model": {
+            **public.get("model", {}),
             "default": config.hermes_model,
             "provider": LOCAL_HERMES_PROVIDER,
             "base_url": config.hermes_base_url,
             "supports_vision": True,
-            "context_length": 262144,
-            "max_tokens": max_output_tokens or 65536,
+            **({"max_tokens": max_output_tokens} if max_output_tokens is not None else {}),
         },
         "providers": {
             LOCAL_HERMES_PROVIDER: {
+                **public.get("provider", {}),
                 "name": "oMLX",
                 "base_url": config.hermes_base_url,
                 "api_key": config.hermes_api_key,
                 "resource_queue_helper": str(config.hermes_resource_queue_helper),
                 "api_mode": "chat_completions",
                 "default_model": config.hermes_model,
-                "capabilities": {"vision": True, "tools": True},
+                "capabilities": {"vision": True, "tools": True, **public.get("provider", {}).get("capabilities", {})},
             }
         },
         "agent": agent,
         "auxiliary": {
             "vision": dict(local_route),
-            "compression": {
-                **local_route,
-                "reasoning_effort": "none",
-                "max_output_tokens": 8192,
-                "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
-            },
+            "compression": {**public.get("auxiliary_compression", {}), **local_route},
             "title_generation": {"enabled": False},
         },
         "fallback_providers": [],
@@ -179,11 +299,8 @@ def prepare_hermes_home(
         "stt": {"enabled": False},
         "tts": {"provider": "local_handoff"},
         "compression": {
-            "enabled": agent_tools,
-            "threshold_tokens": 150000,
-            "tail_mode": "legacy",
-            "context_timeout_seconds": 120,
-            "context_total_ceiling_seconds": 600,
+            **public.get("compression", {}),
+            **({"enabled": False} if not agent_tools else {}),
         },
     }
     atomic_write_json(target / "config.yaml", payload)

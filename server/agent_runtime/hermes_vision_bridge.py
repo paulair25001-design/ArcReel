@@ -33,6 +33,33 @@ _MIMES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 _RESOURCE_TYPES = {"character", "scene", "prop", "product", "storyboard", "character_derivative"}
 
 
+def _generation_parameters(payload: Any) -> dict[str, Any]:
+    """Expose actual non-sensitive generation knobs without changing the request."""
+    if not isinstance(payload, dict):
+        return {}
+    result = {
+        key: payload[key]
+        for key in ("max_tokens", "max_completion_tokens", "temperature", "top_p")
+        if key in payload and type(payload[key]) in (int, float, bool)
+    }
+    levels = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+    if isinstance(payload.get("reasoning_effort"), str) and payload["reasoning_effort"] in levels:
+        result["reasoning_effort"] = payload["reasoning_effort"]
+    template = payload.get("chat_template_kwargs")
+    if isinstance(template, dict):
+        result["chat_template_kwargs"] = {
+            key: template[key] for key in ("enable_thinking", "preserve_thinking") if type(template.get(key)) is bool
+        }
+    reasoning = payload.get("reasoning")
+    if isinstance(reasoning, dict):
+        selected = {"enabled": reasoning["enabled"]} if type(reasoning.get("enabled")) is bool else {}
+        if isinstance(reasoning.get("effort"), str) and reasoning["effort"] in levels:
+            selected["effort"] = reasoning["effort"]
+        if selected:
+            result["reasoning"] = selected
+    return result
+
+
 def _image_part(data: object, mime: object) -> tuple[dict[str, Any], dict[str, Any]]:
     if (
         not isinstance(data, str)
@@ -313,6 +340,7 @@ class VisionTransport:
                     request_id=request_id,
                     request_kind=request_kind,
                     model=self.model,
+                    generation_parameters=_generation_parameters(payload),
                     endpoint_matches_configured=endpoint_matches,
                     model_matches_configured=isinstance(payload, dict) and payload.get("model") == self.model,
                     body_sha256=hashlib.sha256(raw).hexdigest(),

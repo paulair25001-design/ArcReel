@@ -70,7 +70,9 @@ Hermes 的 HTTP 资源屏障由本仓库的 `lib/local_runtime/resource_queue.py
 
 后台结构化文本任务向 oMLX 提交原始 JSON schema，并同时请求 `response_format` 与显式 `structured_outputs`。每个新 worker 的 `wire-audit.json` 只保存实际 HTTP 出站的端点、模型匹配标记及两处 schema 的哈希，不保存提示词、密钥、HTTP 头或响应正文。约束在传输过程中缺失或改变时，worker 在发送前拒绝请求。该回执证明实际提交的约束，不证明服务端 logits processor 已执行；后者仍需服务端运行证据。历史任务不会补写回执。
 
-长会话的原生摘要继续使用同一个本地模型。仅该项目的摘要请求关闭思考输出，原生压缩器采用 1,536 token 的软摘要目标、不附加额外长会话日志预算；摘要硬输出上限为 8,192，原生总时限仍为 600 秒。主制作推理的输出上限保持原值。达到长度上限、超时或未完整提交的摘要都不当作成功，不删除原始会话；从原目标恢复时继续对账。配置与实例适配只在本项目 Hermes 子进程生效，不改全局 Hermes 或 oMLX 设置。
+主推理和原生压缩的参数只读继承 `~/.hermes/config.yaml`：包括思考等级、采样、上下文与输出预算、压缩策略及总时限。本项目不再另设摘要预算、关闭主思考或猜测新的超时值，也不选择未指定的具名 profile。项目仍单独限制本地模型路由、ArcReel MCP 工具权限、免费本地语音与资源屏障，不把全局工具、旧制作技能或云端回退带进来；公共文件与全局 oMLX 设置不会被修改。达到长度上限、超时或未完整提交的摘要仍不当作成功，原始会话保留供原目标继续对账。
+
+公共配置要求压缩前 checkpoint 时，本项目为该隔离 Agent 安装 Hermes 原生 manager-level API v2。完整原始会话与 normalized evidence 保存在当前私有 home 的 `checkpoints/pre-compress/{SID}/{SHA}.json`；文件 `0600`、目录 `0700`，经原子发布、文件及目录 fsync、SHA 回读验证后才返回引用。摘要失败不删除原始会话或已有 checkpoint。这里只提供项目内的上下文检查点，不加载全局外部记忆插件、其状态工具或旧制作流程。
 
 本地配音原始执行回执保存在 `runtime/tts/receipts/`，版本记录绑定原始回执哈希及实际提交的 WAV。回执中的「未听审」状态保持原样。
 

@@ -11,7 +11,6 @@ import logging
 import os
 import re
 import sys
-import types
 from pathlib import Path
 from typing import Any
 
@@ -68,22 +67,6 @@ def configure_project_instructions(agent: Any, prompt: str) -> None:
     agent._invalidate_system_prompt()
 
 
-def configure_project_compression(agent: Any) -> None:
-    """Bound this local agent's native summary prompt without changing its main budget."""
-    compressor: Any = getattr(agent, "context_compressor", None)
-    original = getattr(compressor, "_compute_summary_budget", None)
-    if not callable(original) or getattr(compressor, "tail_mode", None) != "legacy":
-        raise RuntimeError("Hermes did not apply the project's native compression mode")
-
-    def bounded(_engine: Any, turns: Any) -> int:
-        budget = original(turns)
-        if type(budget) is not int or budget < 1:
-            raise RuntimeError("Hermes returned an invalid native summary budget")
-        return min(budget, 1536)
-
-    compressor._compute_summary_budget = types.MethodType(bounded, compressor)
-
-
 def require_project_prompt(text: str) -> None:
     if text.lstrip().startswith("/"):
         raise ValueError("Native Hermes slash commands are unavailable in ArcReel; use project MCP operations")
@@ -134,6 +117,13 @@ def main() -> None:
         raise RuntimeError("ArcReel native vision transport is unavailable")
     bridge = importlib.util.module_from_spec(bridge_spec)
     bridge_spec.loader.exec_module(bridge)
+    checkpoint_spec = importlib.util.spec_from_file_location(
+        "arcreel_hermes_checkpoint", Path(__file__).with_name("hermes_checkpoint.py")
+    )
+    if checkpoint_spec is None or checkpoint_spec.loader is None:
+        raise RuntimeError("ArcReel native transcript checkpoint is unavailable")
+    checkpoint = importlib.util.module_from_spec(checkpoint_spec)
+    checkpoint_spec.loader.exec_module(checkpoint)
     vision = bridge.VisionTransport(
         Path(os.environ["HERMES_HOME"]),
         base_url=os.environ["ARCREEL_HERMES_EXPECTED_BASE_URL"],
@@ -165,10 +155,12 @@ def main() -> None:
                 model=os.environ["ARCREEL_HERMES_EXPECTED_MODEL"],
                 base_url=os.environ["ARCREEL_HERMES_EXPECTED_BASE_URL"],
             )
+            checkpoint.install_project_checkpoint(
+                agent, Path(os.environ["HERMES_HOME"]), importlib.import_module("agent.memory_manager").MemoryManager
+            )
             configure_project_instructions(
                 agent, os.environ["HERMES_EPHEMERAL_SYSTEM_PROMPT"] + bridge.TRUSTED_VISION_NOTICE
             )
-            configure_project_compression(agent)
             restrict_agent_tools(agent, tools.get_tool_definitions)
             return agent
 

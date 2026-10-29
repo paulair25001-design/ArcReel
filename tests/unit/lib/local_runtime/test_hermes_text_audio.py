@@ -87,11 +87,11 @@ class _TextSpawner:
 
 
 @pytest.fixture
-def local_config(tmp_path: Path) -> LocalRuntimeConfig:
+def local_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalRuntimeConfig:
     model = tmp_path / "qwen-tts"
     model.mkdir()
     (model / "config.json").write_text('{"model_type":"qwen3_tts","tts_model_type":"voice_design"}')
-    return replace(
+    config = replace(
         get_local_runtime_config(),
         hermes_home=tmp_path / "hermes",
         hermes_api_key="local-auth-unit-only",
@@ -99,6 +99,11 @@ def local_config(tmp_path: Path) -> LocalRuntimeConfig:
         tts_model=model,
         tts_receipts_dir=tmp_path / "tts-receipts",
     )
+    user_home = tmp_path / "user-home"
+    (user_home / ".hermes").mkdir(parents=True)
+    (user_home / ".hermes/config.yaml").write_text("{}")
+    monkeypatch.setattr(Path, "home", lambda: user_home)
+    return config
 
 
 def _text_result(config: LocalRuntimeConfig, text: str, **changes: Any) -> dict[str, Any]:
