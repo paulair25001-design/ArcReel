@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +40,11 @@ def _requirements(
     filename = projects.normalize_script_filename(script_file)
     directory = projects.get_project_path(project_name)
     versions = VersionManager(directory)
-    with projects.locked_project_script_snapshot(project_name, filename) as (project, script):
+    with ExitStack() as stack:
+        try:
+            project, script = stack.enter_context(projects.locked_project_script_snapshot(project_name, filename))
+        except FileNotFoundError:
+            return [{"unit_id": None, "version": None, "problem": "formal_script_missing"}], project["content_mode"]
         episode = find_episode(project, episode_id)
         if episode is None or projects.normalize_script_filename(episode.get("script_file") or "") != filename:
             return [{"unit_id": None, "version": None, "problem": "formal_script_binding_changed"}], project[

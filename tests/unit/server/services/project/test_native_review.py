@@ -109,6 +109,29 @@ async def test_completed_native_report_covers_current_versions_without_claiming_
     assert "approved" not in result
 
 
+@pytest.mark.parametrize("required_versions", [None, [{"unit_id": "E2S01", "version": 2}]])
+async def test_bound_formal_script_not_yet_present_is_not_ready_and_can_be_read_after_materialization(
+    review_case, required_versions
+):
+    _write_reports(review_case, [_report(review_case)])
+    script = review_case["directory"] / "scripts/episode_2.json"
+    original = script.read_bytes()
+    script.unlink()
+
+    result = await _read(review_case, required_versions=required_versions)
+
+    assert result["ready"] is False
+    assert result["required"] == [{"unit_id": None, "version": None, "problem": "formal_script_missing"}]
+    assert result["missing"] == result["required"]
+    assert result["reviewed"] == []
+    assert result["reports"] == []
+    assert result["reviewed_count"] == 0
+    assert not script.exists()
+
+    script.write_bytes(original)
+    assert (await _read(review_case, required_versions=required_versions))["ready"] is True
+
+
 @pytest.mark.parametrize(
     "changes",
     [

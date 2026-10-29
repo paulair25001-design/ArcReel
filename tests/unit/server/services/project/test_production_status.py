@@ -189,6 +189,53 @@ async def test_existing_episode_without_formal_script_is_readable_but_unknown_ep
         )
 
 
+@pytest.mark.parametrize("state", ["running", "attention"])
+async def test_owned_goal_with_rejected_plan_and_bound_missing_script_can_resume_draft_repair(
+    tmp_path, monkeypatch, state
+):
+    projects, directory = _project(tmp_path)
+    # Native source/planning may bind the future formal filename before its
+    # first successful promotion. A rejected plan remains repairable input.
+    (directory / "scripts/episode_2.json").unlink()
+    (directory / "source").mkdir()
+    source = directory / "source/episode_2.txt"
+    source.write_text('他说："谢谢。"', encoding="utf-8")
+    draft = quarantine_path(directory, 2, QUARANTINE_KIND_NARRATION_SCRIPT_PLAN)
+    draft.parent.mkdir(parents=True)
+    draft.write_text(
+        json.dumps(
+            quarantine_envelope(
+                QUARANTINE_KIND_NARRATION_SCRIPT_PLAN,
+                2,
+                content={"segments": [{"novel_text": "他说：“谢谢。”", "duration_seconds": 8}]},
+                violations=[{"code": "novel_text_coverage", "message": "Preserve the original quotation marks"}],
+            ),
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    before = {path: path.read_bytes() for path in (source, draft)}
+    monkeypatch.setenv("ARCREEL_LOCAL_ONLY", "true")
+    result = await read_episode_production_status(
+        "demo",
+        2,
+        projects=projects,
+        queue=QueueFacts(),
+        resource_state_path=tmp_path / "no-resource.json",
+        goal_store=GoalFacts({"episode_id": 2, "state": state, "session_id": "sid"}),
+    )
+    assert result["script_state"] == "missing"
+    assert result["units"] == []
+    assert result["preparation"]["episode_source"]["present"] is True
+    assert result["preparation"]["drafts"][0]["needs_repair"] is True
+    assert result["workflow"]["next_action"]["type"] == "resolve_draft"
+    assert result["native_review"]["ready"] is False
+    assert result["native_review"]["missing"][0]["problem"] == "formal_script_missing"
+    assert result["goal_complete_technical"] is False
+    assert {path: path.read_bytes() for path in before} == before
+    assert not (directory / "scripts/episode_2.json").exists()
+
+
 async def test_failed_facts_exclude_other_episodes_and_keep_only_latest_unresolved_resource(tmp_path):
     projects, _ = _project(tmp_path)
     tasks = [
