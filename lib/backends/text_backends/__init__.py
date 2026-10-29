@@ -1,5 +1,7 @@
 """文本生成服务层公共 API。"""
 
+from typing import Any
+
 from lib.backends.text_backends.base import (
     TEXT_TASK_TIERS,
     VISION_REQUIRED_TASKS,
@@ -59,3 +61,12 @@ from lib.backends.providers import PROVIDER_AGNES
 from lib.backends.text_backends.agnes import AgnesTextBackend
 
 register_backend(PROVIDER_AGNES, AgnesTextBackend)
+
+
+def _create_local_hermes_backend(**kwargs: Any) -> TextBackend:
+    from lib.local_runtime.hermes_text import HermesTextBackend
+
+    return HermesTextBackend(**kwargs)
+
+
+register_backend("local-hermes", _create_local_hermes_backend)

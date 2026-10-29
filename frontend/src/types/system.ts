@@ -1,4 +1,13 @@
 export interface SystemConfigSettings {
+  execution_runtime?: {
+    mode: "local-hermes-l20";
+    agent_available: boolean;
+    agent_model: string;
+    image_model: string;
+    video_model: string;
+    audio_model: string;
+    cloud_fallback: false;
+  };
   default_video_backend: string;
   default_video_backend_i2v?: string;
   default_video_backend_r2v?: string;

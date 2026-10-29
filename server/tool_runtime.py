@@ -1692,6 +1692,12 @@ class CreateProjectToolRequest(BaseModel):
         default=None,
         description="配音语速倍率（正数）；仅 use_tts 使用，省略时取全局默认，null 表示不向供应商传语速",
     )
+    narration_voice_description: str | None = Field(
+        default=None, description="本地 TTS 的稳定声线身份描述；省略、null 或空白使用本地默认，不改变旁白原词"
+    )
+    narration_instructions: str | None = Field(
+        default=None, description="本地 TTS 的项目级演法：交流对象、重点、停顿和情绪变化；省略、null 或空白使用本地默认"
+    )
 
     @model_validator(mode="after")
     def validate_mode_fields(self) -> CreateProjectToolRequest:
@@ -1786,6 +1792,8 @@ async def create_project(
                 audio_backend=value.audio_backend,
                 narration_voice=value.narration_voice,
                 narration_speed=value.narration_speed,
+                narration_voice_description=value.narration_voice_description,
+                narration_instructions=value.narration_instructions,
                 provided=frozenset(value.model_fields_set & {"audio_backend", "narration_voice", "narration_speed"}),
             ),
             resolver=services.capabilities,
@@ -2465,6 +2473,8 @@ PROJECT_SETTINGS = (
     "brief",
     "narration_voice",
     "narration_speed",
+    "narration_voice_description",
+    "narration_instructions",
     "character_voice_binding",
 )
 PROJECT_OVERVIEW_FIELDS = ("synopsis", "genre", "theme", "world_setting")
@@ -2551,7 +2561,10 @@ class PatchProjectRequest(BaseModel):
     )
     settings: dict[str, Any] | None = Field(
         default=None,
-        description=f"（settings 写入分支）顶层字段映射，键须在白名单 {list(PROJECT_SETTINGS)} 内，值为 null 时清除该字段",
+        description=(
+            f"（settings 写入分支）顶层字段映射，键须在白名单 {list(PROJECT_SETTINGS)} 内，值为 null 时清除该字段。"
+            "narration_voice_description 固定本地声线身份；narration_instructions 冻结项目演法，修改会使旧旁白配音过期"
+        ),
     )
     overview: dict[str, Any] | None = Field(
         default=None,
@@ -3440,6 +3453,10 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
         if value is not None and (not isinstance(value, str) or not value.strip()):
             raise ValueError(f"narration_voice 必须是非空字符串或 null,收到 {value!r}")
         return value
+    if key in {"narration_voice_description", "narration_instructions"}:
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"{key} 必须是字符串或 null,收到 {value!r}")
+        return value.strip() or None if isinstance(value, str) else None
     if key == "narration_speed":
         if value is None:
             return None

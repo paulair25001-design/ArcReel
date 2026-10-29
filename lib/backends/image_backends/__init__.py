@@ -66,3 +66,7 @@ from lib.backends.image_backends.agnes import AgnesImageBackend
 from lib.backends.providers import PROVIDER_AGNES
 
 register_backend(PROVIDER_AGNES, AgnesImageBackend)
+
+from lib.backends.image_backends.l20_factory import L20ImageFactory
+
+register_backend("l20", L20ImageFactory())

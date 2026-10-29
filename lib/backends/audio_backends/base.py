@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class AudioCapability(StrEnum):
@@ -35,6 +35,9 @@ class AudioSynthesisRequest:
     # 语速只对声明 ``AudioCapability.SPEECH_SPEED`` 的 backend 生效；同步 qwen3-tts-flash 不支持
     # （speech_rate 仅 realtime WebSocket 版可用），后端记 debug log 忽略。
     speed: float | None = None
+    # Local VoiceDesign inputs; other backends may ignore these fields.
+    voice_description: str | None = None
+    instructions: str | None = None
 
 
 @dataclass
@@ -52,6 +55,8 @@ class AudioSynthesisResult:
     output_path: Path
     input_tokens: int | None = None
     audio_output_tokens: int | None = None
+    # Local execution evidence; preserves the original wrapper request and receipt.
+    provenance: dict[str, Any] | None = None
 
 
 class AudioBackend(Protocol):

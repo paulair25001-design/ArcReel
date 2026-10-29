@@ -202,6 +202,8 @@ def _audio_settings(record: Mapping[str, Any]) -> TtsSynthesisSettings:
     model_id = record.get("tts_model_id")
     voice = record.get("tts_voice")
     speed = record.get("tts_speed")
+    voice_description = record.get("tts_voice_description")
+    instructions = record.get("tts_instructions")
     if (
         not isinstance(provider_id, str)
         or not provider_id.strip()
@@ -209,6 +211,10 @@ def _audio_settings(record: Mapping[str, Any]) -> TtsSynthesisSettings:
         or not model_id.strip()
         or not isinstance(voice, str)
         or not voice.strip()
+        or any(
+            value is not None and (not isinstance(value, str) or not value.strip())
+            for value in (voice_description, instructions)
+        )
         or (
             speed is not None
             and (
@@ -222,6 +228,8 @@ def _audio_settings(record: Mapping[str, Any]) -> TtsSynthesisSettings:
         model_id=model_id,
         voice=voice,
         speed=speed,
+        voice_description=voice_description,
+        instructions=instructions,
     )
 
 

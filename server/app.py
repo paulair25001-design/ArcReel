@@ -15,8 +15,9 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ from lib.agent.agent_session_store.store import DbSessionStore
 from lib.config.env_keys import PROVIDER_SECRET_KEYS
 from lib.db import async_session_factory, close_db, init_db
 from lib.generation.generation_worker import GenerationWorker
+from lib.infra.async_thread import run_noninterruptible_async
 from lib.infra.data_root_layout import DataRootLayout, list_project_dirs
 from lib.infra.data_root_layout_migration import migrate_data_root_layout
 from lib.infra.ffmpeg import log_ffmpeg_status
@@ -47,14 +49,17 @@ from lib.infra.logging_config import (
     setup_logging,
     warn_if_log_dir_env_set,
 )
+from lib.infra.logging_utils import redact_diagnostic_text
 from lib.infra.loop_stall_probe import start_loop_stall_probe, stop_loop_stall_probe
 from lib.infra.path_safety import try_safe_join
+from lib.local_runtime.config import local_only_enabled
 from lib.project.project_migrations import cleanup_stale_backups, run_project_migrations
 from lib.script.source_loader.migration import migrate_project_source_encoding, migrate_project_source_encoding_once
 from server.auth import ensure_auth_password, get_current_user, warn_if_auth_disabled
 from server.cors_config import resolve_cors_policy
 from server.dependencies import require_project_migration_ok, require_valid_project_name
 from server.error_handlers import register_error_handlers
+from server.local_runtime import LocalOnlyProbeMiddleware
 from server.remote_mcp import mount_remote_mcp, remote_mcp_host
 from server.routers import (
     ad_script,
@@ -338,13 +343,51 @@ async def _migrate_source_encoding_on_startup(
     return summary
 
 
+async def _shutdown_local_application(app: FastAPI, *, trash_expiry: Any, catalog_sync: Any, stall_probe: Any) -> None:
+    """Complete local cleanup even when another shutdown operation fails."""
+    from lib.catalog.official_sync import stop_official_sync
+    from lib.custom_provider.endpoint_test import shutdown_trial_runs
+    from server.local_runtime_sessions import drain_and_finalize_local_media
+    from server.services.project.trash_expiry import stop_trash_expiry
+
+    errors: list[BaseException] = []
+
+    async def attempt(name: str, operation: Callable[[], Awaitable[Any]]) -> None:
+        try:
+            await operation()
+        except BaseException as exc:
+            errors.append(exc)
+            logger.error("Local application shutdown failed step=%s: %s", name, redact_diagnostic_text(exc))
+
+    await attempt("trash expiry", lambda: stop_trash_expiry(trash_expiry))
+    if catalog_sync is not None:
+        await attempt("catalog sync", lambda: stop_official_sync(catalog_sync))
+    await attempt("stall probe", lambda: stop_loop_stall_probe(stall_probe))
+    assistant.assistant_service.session_manager.set_autonomous_turn_listener(None)
+    event_service = getattr(app.state, "project_event_service", None)
+    if event_service is not None:
+        await attempt("project events", event_service.shutdown)
+    await attempt("assistant sessions", assistant.assistant_service.shutdown)
+    worker = getattr(app.state, "generation_worker", None)
+    await attempt(
+        "media drain and restoration", lambda: drain_and_finalize_local_media(worker.stop if worker else None)
+    )
+    await attempt("trial runs", shutdown_trial_runs)
+    await attempt("HTTP client", shutdown_http_client)
+    await attempt("database", close_db)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup("Local application shutdown failures", errors)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # Startup
     # 安全红线检测：先父进程 env 净化，再 sandbox 工具可用性，再 docker 检测
     assert_no_provider_secrets_in_environ()
-    sandbox_enabled = check_sandbox_available()
+    sandbox_enabled = False if local_only_enabled() else check_sandbox_available()
     # detect_docker_environment 仅在 sandbox 可用平台有意义（Linux 路径探测）；
     # Windows 回退时跳过，避免无意义的文件系统调用。
     is_docker = detect_docker_environment() if sandbox_enabled else False
@@ -374,7 +417,7 @@ async def lifespan(app: FastAPI):
     await migrate_data_root_layout(
         layout.root,
         session_factory=async_session_factory,
-        sdk_config_dir=default_sdk_config_dir(),
+        sdk_config_dir=layout.runtime_dir / "legacy-sdk" if local_only_enabled() else default_sdk_config_dir(),
     )
 
     # 源文件编码迁移（幂等；失败不阻塞启动）。先于 schema 迁移跑：源文一律先归到 UTF-8，
@@ -411,19 +454,20 @@ async def lifespan(app: FastAPI):
     # 排在数据根布局迁移之后：布局迁移把旧布局的键改到 projects/ 下的目录，这里才按当前布局重算。
     # 排在本地 transcript 导入之前：导入按当前键列本地会话、按当前键判断是否已导入，键没对齐时会在新键下
     # 再导入一份，同一会话两个键下都有记录，对齐就不再改它。
-    try:
-        await align_session_keys(
-            async_session_factory,
-            projects_dir=layout.projects_dir,
-            sdk_config_dir=default_sdk_config_dir(),
-            store_enabled=session_store_enabled(),
-        )
-    except Exception:
-        logger.exception("会话存储键对齐失败（不阻塞启动）")
+    if not local_only_enabled():
+        try:
+            await align_session_keys(
+                async_session_factory,
+                projects_dir=layout.projects_dir,
+                sdk_config_dir=default_sdk_config_dir(),
+                store_enabled=session_store_enabled(),
+            )
+        except Exception:
+            logger.exception("会话存储键对齐失败（不阻塞启动）")
 
     # Migrate any pre-existing local SDK jsonl transcripts into the DbSessionStore.
     # Runs once (marker-gated); failures are non-fatal and logged.
-    if session_store_enabled():
+    if not local_only_enabled() and session_store_enabled():
         try:
             store = DbSessionStore(async_session_factory)
             await migrate_local_transcripts_to_store(store, data_root=layout.root)
@@ -497,9 +541,10 @@ async def lifespan(app: FastAPI):
     # 把 agent_runtime_profile 物化到存量项目（文件 I/O → worker 线程）
     from lib.project.project_manager import get_project_manager
 
-    _pm = get_project_manager()
-    _profile_sync_stats = await asyncio.to_thread(_pm.sync_all_agent_profiles)
-    _log_profile_sync_outcome(_profile_sync_stats)
+    if not local_only_enabled():
+        _pm = get_project_manager()
+        _profile_sync_stats = await asyncio.to_thread(_pm.sync_all_agent_profiles)
+        _log_profile_sync_outcome(_profile_sync_stats)
 
     # 启动共享 httpx 客户端（用于版本检查等外部 API 调用）
     await startup_http_client()
@@ -528,19 +573,37 @@ async def lifespan(app: FastAPI):
     # 模型目录的官方同步：启动时检查一次，之后每天一次；随应用关停取消
     from lib.catalog.official_sync import start_official_sync, stop_official_sync
 
-    catalog_sync = start_official_sync(async_session_factory)
+    catalog_sync = None if local_only_enabled() else start_official_sync(async_session_factory)
     # 项目回收站与已删除项目的过期清理：启动时清一次，之后定期清理；随应用关停取消
     from server.services.project.trash_expiry import start_trash_expiry, stop_trash_expiry
 
     trash_expiry = start_trash_expiry(layout)
+    local_shutdown = local_only_enabled()
     try:
         async with remote_mcp_host.run():
             yield
     finally:
-        await stop_trash_expiry(trash_expiry)
-        await stop_official_sync(catalog_sync)
-        # 运行期异常或关停被取消时同样撤销延时转储，免得收尾阶段误写调用栈。
-        await stop_loop_stall_probe(stall_probe)
+        if local_shutdown:
+            original_error = sys.exception()
+            try:
+                await run_noninterruptible_async(
+                    _shutdown_local_application(
+                        app, trash_expiry=trash_expiry, catalog_sync=catalog_sync, stall_probe=stall_probe
+                    )
+                )
+            except BaseException:
+                if original_error is None:
+                    raise
+                logger.error("Local shutdown also failed; preserving the original lifespan exception")
+        else:
+            await stop_trash_expiry(trash_expiry)
+            if catalog_sync is not None:
+                await stop_official_sync(catalog_sync)
+            # 运行期异常或关停被取消时同样撤销延时转储，免得收尾阶段误写调用栈。
+            await stop_loop_stall_probe(stall_probe)
+
+    if local_shutdown:
+        return
 
     # Shutdown
     assistant.assistant_service.session_manager.set_autonomous_turn_listener(None)
@@ -938,6 +1001,7 @@ class ResponseCompressionMiddleware:
 
 # 最外层：前端缓存头中间件改写的是响应头，压缩不改变 content-type，两者顺序互不影响
 app.add_middleware(ResponseCompressionMiddleware)
+app.add_middleware(LocalOnlyProbeMiddleware)
 
 
 # 前端构建产物：SPA 静态文件服务。fallback 仅对 GET/HEAD 生效，写请求误入页面路径不再返回页面。

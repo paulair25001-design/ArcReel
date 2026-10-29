@@ -32,6 +32,8 @@ from lib.config.resolver import (
     VoiceConsistency,
     apply_duration_constraints,
 )
+from lib.local_runtime.config import local_only_enabled
+from lib.local_runtime.l20_capabilities import VIDEO_RESOLUTIONS
 
 #: 视频路线：分镜（首帧驱动）与参考生视频。问题码按路线分族，已记录的码不改名。
 VideoRoute = Literal["storyboard", "reference_video"]
@@ -345,6 +347,8 @@ async def evaluate_video_request_facts(
 
     if resolution_override is not None and resolution_override.resolution is not None:
         resolution = resolution_override.resolution
+        if local_only_enabled() and provider_id == "l20" and resolution not in VIDEO_RESOLUTIONS:
+            return VideoRequestFactsFailure(codes["unavailable"], (("capability", generation_type), *identity_params))
     else:
         # 覆盖为「自动」即项目不存档位：以空 project 解析，自定义供应商仍落到模型默认档。
         saved_settings = project if resolution_override is None else {}

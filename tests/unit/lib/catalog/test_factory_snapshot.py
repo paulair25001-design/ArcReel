@@ -12,6 +12,7 @@ from lib.backends.backend_assembly.specs import get_provider_spec
 from lib.catalog import query as catalog
 from lib.catalog.query import SNAPSHOT_DIR
 from lib.config.registry import PROVIDER_REGISTRY
+from lib.local_runtime.models import LOCAL_PROVIDERS
 
 
 def test_snapshot_passes_build_side_check():
@@ -23,10 +24,11 @@ def test_snapshot_passes_build_side_check():
 
 
 def test_snapshot_lists_exactly_the_registry_providers():
-    assert set(catalog.factory_snapshot().builtin_providers) == set(PROVIDER_REGISTRY)
+    # Self-hosted model facts are explicit local runtime contracts, not official catalog entries.
+    assert set(catalog.factory_snapshot().builtin_providers) == set(PROVIDER_REGISTRY) - LOCAL_PROVIDERS
 
 
-@pytest.mark.parametrize("provider_id", list(PROVIDER_REGISTRY))
+@pytest.mark.parametrize("provider_id", sorted(set(PROVIDER_REGISTRY) - LOCAL_PROVIDERS))
 def test_every_listed_model_resolves_to_an_entry(provider_id: str):
     # 引用不到条目的供应商模型会在查询时被跳过，这里要求清单与查询结果一一对应。
     listing = catalog.factory_snapshot().builtin_providers[provider_id]

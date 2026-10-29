@@ -493,6 +493,36 @@ PROVIDER_SPEC_REGISTRY.update(
 )
 
 
+def _build_local(media_type: str, _config: LoadedConfig, model_id: str | None) -> Any:
+    from lib.local_runtime.config import LocalOnlyPolicyError, get_local_runtime_config, local_model_pair
+
+    provider, expected_model = local_model_pair(media_type)
+    if model_id is not None and model_id != expected_model:
+        raise LocalOnlyPolicyError(f"Local {media_type} model must be {expected_model}")
+    kwargs = {"model": expected_model} if media_type in {"image", "video"} else {}
+    if media_type in {"image", "video"}:
+        from lib.local_runtime.l20_direct_config import get_l20_direct_config
+
+        config = get_l20_direct_config()
+    else:
+        config = get_local_runtime_config()
+    return _media_create_backend(media_type)(provider, config=config, **kwargs)
+
+
+for _local_provider, _local_media in (
+    ("local-hermes", "text"),
+    ("local-tts", "audio"),
+    ("l20", "image"),
+    ("l20", "video"),
+):
+    PROVIDER_SPEC_REGISTRY[(_local_provider, _local_media)] = ProviderSpec(
+        provider_id=_local_provider,
+        media_type=_local_media,
+        registry_backend=_local_provider,
+        build_backend=partial(_build_local, _local_media),
+    )
+
+
 _VALID_MEDIA_TYPES = frozenset({"image", "video", "audio", "text"})
 
 

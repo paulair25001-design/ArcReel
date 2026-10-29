@@ -818,6 +818,8 @@ class MediaGenerator:
         before_commit: Callable[[Path], Awaitable[None]] | None = None,
         commit_staged: Callable[[Path, Path], int | PaidVersionCommit] | None = None,
         target_resource: tuple[str, str] | None = None,
+        voice_description: str | None = None,
+        instructions: str | None = None,
         **version_metadata,
     ) -> tuple[Path, int]:
         """
@@ -866,7 +868,12 @@ class MediaGenerator:
                 purpose=CallPurpose.GENERATION_TASK,
                 inputs=_ledger_inputs(
                     voice=voice,
-                    parameters=_ledger_inputs(language_type=language_type, speed=speed),
+                    parameters=_ledger_inputs(
+                        language_type=language_type,
+                        speed=speed,
+                        voice_description=voice_description,
+                        instructions=instructions,
+                    ),
                 ),
             ) as call:
                 request = AudioSynthesisRequest(
@@ -875,6 +882,8 @@ class MediaGenerator:
                     voice=voice,
                     language_type=language_type,
                     speed=speed,
+                    voice_description=voice_description,
+                    instructions=instructions,
                 )
                 if before_submit is not None:
                     await before_submit()
@@ -895,6 +904,13 @@ class MediaGenerator:
                 await before_commit(staged_path)
             commit = commit_staged
             selected_current = True
+            local_speech = (
+                {**result.provenance, "canonical_output": str(output_path), "selected_current": True}
+                if result.provenance is not None
+                else None
+            )
+            if local_speech is not None:
+                version_metadata = {**version_metadata, "local_speech": local_speech}
             if commit is None:
                 version = await run_noninterruptible_sync(
                     self.versions.commit_staged_version,
@@ -912,6 +928,20 @@ class MediaGenerator:
                     selected_current = committed.selected
                 else:
                     version = committed
+                if local_speech is not None:
+                    local_speech = {
+                        **local_speech,
+                        "canonical_output": str(output_path) if selected_current else None,
+                        "selected_current": selected_current,
+                    }
+                    if not await run_noninterruptible_sync(
+                        self.versions.update_version_metadata,
+                        resource_type,
+                        resource_id,
+                        version,
+                        local_speech=local_speech,
+                    ):
+                        raise RuntimeError("audio commit did not retain local speech provenance")
             if selected_current and not await run_noninterruptible_sync(output_path.is_file):
                 raise RuntimeError("audio commit completed without a regular formal output file")
             return output_path, version

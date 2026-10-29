@@ -72,16 +72,21 @@ def build_narration_audio_basis_from_canonical_text(
 
     if not text:
         raise ValueError("narration audio basis requires non-empty canonical text")
+    inputs: dict[str, object] = {
+        "text": text,
+        "provider_id": settings.provider_id,
+        "model_id": settings.model_id,
+        "voice": settings.voice,
+        "speed": settings.speed,
+    }
+    if settings.voice_description is not None:
+        inputs["voice_description"] = settings.voice_description
+    if settings.instructions is not None:
+        inputs["instructions"] = settings.instructions
     return ArtifactBasis.build(
         "narration-delivery/tts-audio",
         kind_version=1,
-        inputs={
-            "text": text,
-            "provider_id": settings.provider_id,
-            "model_id": settings.model_id,
-            "voice": settings.voice,
-            "speed": settings.speed,
-        },
+        inputs=inputs,
     )
 
 

@@ -21,6 +21,7 @@ from lib.i18n import DEFAULT_LOCALE
 from lib.infra.data_root_layout import DataRootLayout
 from lib.infra.logging_utils import redact_diagnostic_text
 from lib.infra.path_safety import PathTraversalError, safe_join
+from lib.local_runtime.config import local_only_enabled
 from server.agent_runtime.agent_access_policy import AgentAccessPolicy
 from server.agent_runtime.entry_pipeline import SessionEntryPipeline
 from server.agent_runtime.event_log import (
@@ -33,6 +34,7 @@ from server.agent_runtime.failure_observation import (
     build_startup_failure_observation,
     failure_observation_json,
 )
+from server.agent_runtime.hermes_client import HermesAgentOptions, HermesSDKClient
 from server.agent_runtime.message_serialization import (
     is_main_turn_activity,
     message_to_dict,
@@ -729,6 +731,14 @@ class SessionManager:
             session_id=session_id,
         )
 
+    @staticmethod
+    def _client_for_options(options: Any) -> Any:
+        if isinstance(options, HermesAgentOptions):
+            return HermesSDKClient(options)
+        if local_only_enabled():
+            raise RuntimeError("Local-only Agent sessions require Hermes options")
+        return ClaudeSDKClient(options=options)
+
     def _build_session_store(self):
         """委派给装配器的 session store 单例。AssistantService 经此拿到与 SDK options
         同一份 store 实例（同一 per-user 命名空间），读写共享缓存。"""
@@ -867,7 +877,7 @@ class SessionManager:
         sdk_session_id 就绪后由 inbox 任务先写日志（seq 0）再放行等待，权威
         条目落在 ``managed.initial_user_log_entry`` 供受理响应回传。
         """
-        if not SDK_AVAILABLE:
+        if not SDK_AVAILABLE and not local_only_enabled():
             exc = RuntimeError("claude_agent_sdk is not installed")
             raise _make_agent_startup_error(exc, project_name=project_name, session_id=None) from exc
 
@@ -897,7 +907,7 @@ class SessionManager:
                 sdk_stderr=sdk_stderr,
             ) from exc
         actor = SessionActor(
-            client_factory=lambda: ClaudeSDKClient(options=options),
+            client_factory=lambda: self._client_for_options(options),
             on_message=self._make_actor_message_callback(managed_ref),
             on_command_lifecycle=self._make_command_lifecycle_callback(managed_ref),
         )
@@ -1265,7 +1275,12 @@ class SessionManager:
             if meta is None:
                 raise FileNotFoundError(f"session not found: {session_id}")
 
-        if not SDK_AVAILABLE:
+        if local_only_enabled():
+            from server.local_runtime_sessions import cancel_local_project_finalization
+
+            await cancel_local_project_finalization(meta.project_name)
+
+        if not SDK_AVAILABLE and not local_only_enabled():
             exc = RuntimeError("claude_agent_sdk is not installed")
             raise _make_agent_startup_error(exc, project_name=meta.project_name, session_id=session_id) from exc
 
@@ -1294,7 +1309,7 @@ class SessionManager:
                 sdk_stderr=sdk_stderr,
             ) from exc
         actor = SessionActor(
-            client_factory=lambda: ClaudeSDKClient(options=options),
+            client_factory=lambda: self._client_for_options(options),
             on_message=self._make_actor_message_callback(managed_ref),
             on_command_lifecycle=self._make_command_lifecycle_callback(managed_ref),
         )

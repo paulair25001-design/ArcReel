@@ -56,6 +56,7 @@ function buildPatch(fields: AgentRuntimeFields, saved: AgentRuntimeFields): Syst
 export function AgentConfigTab() {
   const { t } = useTranslation("dashboard");
   const issues = useSectionConfigIssues("arcreel-agent");
+  const runtime = useConfigStatusStore((state) => state.executionRuntime);
 
   return (
     <section aria-labelledby="arcreel-agent-title" className="flex flex-col gap-8">
@@ -63,19 +64,41 @@ export function AgentConfigTab() {
         <h2 id="arcreel-agent-title" className="text-lg font-medium">
           {t("settings_arcreel_agent")}
         </h2>
-        <p className="text-sm text-muted-foreground">{t("arcreel_agent_section_desc")}</p>
         <p className="text-sm text-muted-foreground">
-          <Trans
-            t={t}
-            i18nKey="arcreel_agent_external_hint"
-            components={{
-              guide: <Link href={settingsSectionPath("external-agent")} className="text-primary underline-offset-4 hover:underline" />,
-            }}
-          />
+          {t(runtime ? "local_runtime_description" : "arcreel_agent_section_desc")}
         </p>
+        {runtime ? (
+          <p className="text-sm text-muted-foreground">{t("local_runtime_constraints")}</p>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            <Trans
+              t={t}
+              i18nKey="arcreel_agent_external_hint"
+              components={{
+                guide: <Link href={settingsSectionPath("external-agent")} className="text-primary underline-offset-4 hover:underline" />,
+              }}
+            />
+          </p>
+        )}
       </header>
       <ConfigIssueNotice issues={issues} />
-      <CredentialsSection />
+      {runtime ? (
+        <dl className="grid gap-3 rounded-lg border border-border p-4">
+          {([
+            ["local_runtime_agent", runtime.agent_model],
+            ["local_runtime_image", runtime.image_model],
+            ["local_runtime_video", runtime.video_model],
+            ["local_runtime_audio", runtime.audio_model],
+          ] as const).map(([label, value]) => (
+            <div key={label}>
+              <dt className="text-sm text-muted-foreground">{t(label)}</dt>
+              <dd className="wrap-break-word text-sm">{value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <CredentialsSection />
+      )}
       <RuntimeSettings />
       <p className="text-sm text-muted-foreground">
         <Trans

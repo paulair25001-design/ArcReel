@@ -128,6 +128,12 @@ def clamp_reference_images(
     进任务结果与预览响应，日志只作排障对照。
     """
     total = len(references)
+    from lib.local_runtime.config import LocalOnlyPolicyError, local_only_enabled
+
+    if local_only_enabled() and max_reference_images > 0 and total > max_reference_images:
+        raise LocalOnlyPolicyError(
+            f"The local image route accepts at most {max_reference_images} reference images; received {total}"
+        )
     if max_reference_images <= 0 or total <= max_reference_images:
         return ReferenceImageClamp(total=total, kept=total, max_reference_images=max_reference_images, model=model)
     dropped: list[str] = []

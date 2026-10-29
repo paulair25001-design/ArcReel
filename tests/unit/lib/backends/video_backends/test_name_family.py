@@ -20,7 +20,7 @@ def test_names_fall_back_to_api_model_name_without_an_entry():
     assert capability_names("relay-video-x") == ("relay-video-x",)
 
 
-@pytest.mark.parametrize("backend_name", sorted(get_registered_backends()))
+@pytest.mark.parametrize("backend_name", sorted(set(get_registered_backends()) - {"l20"}))
 def test_unrecognized_model_falls_back_to_text_and_first_frame_only(backend_name: str):
     caps = video_capabilities_for_model(backend_name, "acme-video-9")
 
@@ -30,6 +30,11 @@ def test_unrecognized_model_falls_back_to_text_and_first_frame_only(backend_name
     assert caps.max_reference_images == 0
     assert caps.reference_audio_mode is ReferenceAudioMode.NONE
     assert caps.max_reference_audio_count == 0
+
+
+def test_local_backend_rejects_an_unrecognized_model():
+    with pytest.raises(ValueError, match="Unsupported local L20 video model"):
+        video_capabilities_for_model("l20", "acme-video-9")
 
 
 def test_alias_of_the_mapped_entry_selects_the_family(monkeypatch: pytest.MonkeyPatch):

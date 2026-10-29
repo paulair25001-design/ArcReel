@@ -521,6 +521,7 @@ class TestRegistryShape:
     def test_audio_registered(self):
         audio_keys = {k for k in PROVIDER_SPEC_REGISTRY if k[1] == "audio"}
         assert audio_keys == {
+            ("local-tts", "audio"),
             ("dashscope", "audio"),
             ("minimax", "audio"),
             ("gemini-aistudio", "audio"),
@@ -536,6 +537,7 @@ class TestRegistryShape:
         # 文本九对：七 provider + gemini 两 id（aistudio/vertex）
         text_keys = {k for k in PROVIDER_SPEC_REGISTRY if k[1] == "text"}
         assert text_keys == {
+            ("local-hermes", "text"),
             ("ark", "text"),
             ("ark-agent-plan", "text"),
             ("grok", "text"),

@@ -80,6 +80,26 @@ class ProviderMeta:
 
 
 PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
+    "local-hermes": ProviderMeta(
+        display_name="Hermes Local",
+        description="本机 Hermes 与 oMLX 文本、图像理解和工作流编排。",
+        required_keys=[],
+        default_concurrency={"image": 1, "video": 1, "audio": 1},
+    ),
+    "l20": ProviderMeta(
+        display_name="L20",
+        description="受保护 L20 上的 Qwen-Image 与 FastH3，图片和视频共用设备队列。",
+        required_keys=[],
+        optional_keys=["image_max_workers", "video_max_workers"],
+        default_concurrency={"image": 1, "video": 1},
+    ),
+    "local-tts": ProviderMeta(
+        display_name="Local TTS",
+        description="免费本地 Qwen3-TTS 配音。",
+        required_keys=[],
+        optional_keys=["audio_max_workers"],
+        default_concurrency={"audio": 1},
+    ),
     "gemini-aistudio": ProviderMeta(
         display_name="AI Studio",
         description="Google AI Studio 提供 Gemini 系列模型，支持图片、视频和语音生成，适合快速原型和个人项目。",

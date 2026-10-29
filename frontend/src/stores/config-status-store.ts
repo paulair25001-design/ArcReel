@@ -7,6 +7,7 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import { API } from "@/api";
 import type { SettingsSection } from "@/app-routes";
+import type { SystemConfigSettings } from "@/types";
 import { useEndpointCatalogStore } from "./endpoint-catalog-store";
 
 // ---------------------------------------------------------------------------
@@ -26,6 +27,7 @@ async function getConfigStatus(): Promise<{
   issues: ConfigIssue[];
   availableMediaTypes: string[];
   isEmbeddedAgentConfigured: boolean;
+  executionRuntime: SystemConfigSettings["execution_runtime"] | null;
 }> {
   const issues: ConfigIssue[] = [];
 
@@ -85,7 +87,9 @@ async function getConfigStatus(): Promise<{
   return {
     issues,
     availableMediaTypes,
-    isEmbeddedAgentConfigured: configRes.settings.anthropic_api_key?.is_set ?? false,
+    isEmbeddedAgentConfigured:
+      configRes.settings.execution_runtime?.agent_available ?? configRes.settings.anthropic_api_key?.is_set ?? false,
+    executionRuntime: configRes.settings.execution_runtime ?? null,
   };
 }
 
@@ -94,6 +98,7 @@ async function getConfigStatus(): Promise<{
 // ---------------------------------------------------------------------------
 
 interface ConfigStatusState {
+  executionRuntime: SystemConfigSettings["execution_runtime"] | null;
   issues: ConfigIssue[];
   isEmbeddedAgentConfigured: boolean;
   /** 当前已就绪供应商（含自定义）覆盖到的媒体类型集合。 */
@@ -120,18 +125,27 @@ export const useConfigStatusStore = create<ConfigStatusState>((set, get) => {
       set({ loading: true, pendingRefresh: false });
       try {
         // react-doctor-disable-next-line react-doctor/async-await-in-loop -- 补跑必须等上一轮落地后再读 pendingRefresh，并发会让旧响应覆盖新数据
-        const { issues, availableMediaTypes, isEmbeddedAgentConfigured } = await getConfigStatus();
+        const { issues, availableMediaTypes, isEmbeddedAgentConfigured, executionRuntime } = await getConfigStatus();
         set({
           issues,
           availableMediaTypes,
           isEmbeddedAgentConfigured,
+          executionRuntime,
           isComplete: issues.length === 0,
           initialized: true,
         });
       } catch {
         // 失败回退未初始化并清空能力集：避免任何消费方（含未来不检查 initialized 的调用方）
         // 把上一次成功的过期数据当作可信，同时让下次 fetch() 仍可重试。
-        set({ initialized: false, availableMediaTypes: [], isEmbeddedAgentConfigured: false });
+        const runtime = get().executionRuntime;
+        set({
+          initialized: false,
+          availableMediaTypes: [],
+          isEmbeddedAgentConfigured: false,
+          // Keep an established local-only mode while its availability is unknown,
+          // so a transient read error cannot expose cloud credential controls.
+          executionRuntime: runtime ? { ...runtime, agent_available: false } : null,
+        });
       }
       // loading 仅在整条链终止时才置 false:补跑间隙保持 true,避免 true→false→true 闪烁。
       if (!get().pendingRefresh) {
@@ -142,6 +156,7 @@ export const useConfigStatusStore = create<ConfigStatusState>((set, get) => {
   };
 
   return {
+    executionRuntime: null,
     issues: [],
     isEmbeddedAgentConfigured: false,
     availableMediaTypes: [],
@@ -181,6 +196,13 @@ const EMBEDDED_AGENT_ISSUE: ConfigIssue = {
   description: "embedded_agent_not_configured_desc",
 };
 
+const LOCAL_AGENT_ISSUE: ConfigIssue = {
+  key: "no-local-agent",
+  section: "arcreel-agent",
+  label: "local_runtime_agent_missing",
+  description: "local_runtime_agent_missing_desc",
+};
+
 /**
  * 全局设置里某个分区要就地提示的配置问题；不传分区时返回全部分区的问题。
  * 在 `issues` 之外加上「内嵌 Agent 未配置」：内嵌 Agent 是可选项，它不计入 `isComplete`，
@@ -189,8 +211,9 @@ const EMBEDDED_AGENT_ISSUE: ConfigIssue = {
 export function useSectionConfigIssues(section?: SettingsSection): ConfigIssue[] {
   const issues = useConfigStatusStore((s) => s.issues);
   const agentMissing = useConfigStatusStore((s) => s.initialized && !s.isEmbeddedAgentConfigured);
+  const localMode = useConfigStatusStore((s) => s.executionRuntime !== null);
   return useMemo(() => {
-    const all = agentMissing ? [...issues, EMBEDDED_AGENT_ISSUE] : issues;
+    const all = agentMissing ? [...issues, localMode ? LOCAL_AGENT_ISSUE : EMBEDDED_AGENT_ISSUE] : issues;
     return section ? all.filter((issue) => issue.section === section) : all;
-  }, [issues, agentMissing, section]);
+  }, [issues, agentMissing, localMode, section]);
 }

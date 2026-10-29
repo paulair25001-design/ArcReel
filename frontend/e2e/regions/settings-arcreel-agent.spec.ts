@@ -1,10 +1,39 @@
 import type { Page } from "@playwright/test";
+import { loadRecordedResponses } from "../support/recorded.ts";
 import { defineRegionScenarios } from "../support/scenarios.ts";
 import { expect, type ApiOverrides } from "../support/test.ts";
 
 // 全局设置「ArcReel Agent」：Agent 供应商列表、默认折叠的运行参数、添加与删除 Agent 供应商的弹层。
 
 const PATH = "/app/settings?section=arcreel-agent";
+const LOCAL_MODEL = "Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp";
+
+function localRuntimeApi(agentAvailable: boolean): ApiOverrides {
+  const recorded = loadRecordedResponses().get("GET /api/v1/system/config")!.body as {
+    settings: Record<string, unknown>;
+    options: Record<string, unknown>;
+  };
+  return {
+    "GET /api/v1/system/config": {
+      status: 200,
+      body: {
+        ...recorded,
+        settings: {
+          ...recorded.settings,
+          execution_runtime: {
+            mode: "local-hermes-l20",
+            agent_available: agentAvailable,
+            agent_model: LOCAL_MODEL,
+            image_model: "l20/qwen-image-2.1-int8",
+            video_model: "l20/fasth3-v2-4step",
+            audio_model: "local-tts/qwen3-tts-voice-design",
+            cloud_fallback: false,
+          },
+        },
+      },
+    },
+  };
+}
 
 function tierStatus(
   tier: string,
@@ -53,6 +82,24 @@ async function sectionReady(page: Page) {
 }
 
 defineRegionScenarios("全局设置 · ArcReel Agent", [
+  ...[true, false].map((agentAvailable) => ({
+    name: `本地 Hermes ${agentAvailable ? "已就绪" : "未就绪"}：模型、能力说明与高级设置可达，云端凭证入口隐藏`,
+    path: PATH,
+    api: localRuntimeApi(agentAvailable),
+    ready: async (page: Page) => {
+      await page.getByText(LOCAL_MODEL, { exact: true }).waitFor();
+      await expect(page.getByText(/视频固定为 576p/)).toContainText("需同时设置首帧和目标尾帧");
+      await expect(page.getByRole("heading", { name: "Agent 供应商" })).toHaveCount(0);
+      await expect(page.getByRole("note", { name: "本地 Hermes 尚未就绪" })).toHaveCount(agentAvailable ? 0 : 1);
+    },
+    act: async (page: Page) => {
+      await page.getByRole("button", { name: "高级", exact: true }).click();
+      await page.getByRole("spinbutton", { name: "最大并发会话数" }).fill("6");
+      const main = page.getByRole("main");
+      await main.evaluate((element) => element.scrollTo({ top: element.scrollHeight }));
+      await expect(page.getByRole("button", { name: "保存", exact: true })).toBeInViewport({ ratio: 1 });
+    },
+  })),
   {
     name: "没有 Agent 供应商时，本分区就地提示内嵌 Agent 未配置",
     path: PATH,

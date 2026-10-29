@@ -415,6 +415,15 @@ def get_entry(key: EntryKey) -> CatalogEntry | None:
 
 
 def _indexed_models(provider_id: str) -> dict[str, _IndexedModel]:
+    from lib.local_runtime.models import LOCAL_PROVIDERS, model_specs
+
+    if provider_id in LOCAL_PROVIDERS:
+        return {
+            model_id: _IndexedModel(
+                model=CatalogModel(**facts), entry=None, multiplier=0.0, api_model_name=model_id, official=True
+            )
+            for model_id, facts in model_specs(provider_id).items()
+        }
     data = catalog_data()
     if not _index_cache or _index_cache[0][0] is not data:
         _index_cache[:] = [(data, _build_index(data, _user_added[0], app_version()))]

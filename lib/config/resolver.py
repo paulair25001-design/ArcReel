@@ -43,6 +43,7 @@ from lib.custom_provider import is_custom_provider, parse_provider_id
 from lib.db.repositories.credential_repository import CredentialRepository
 from lib.db.repositories.custom_provider_repo import CustomProviderRepository
 from lib.episode.episode_target_duration import project_episode_target_duration
+from lib.local_runtime.config import LocalOnlyPolicyError, local_model_pair, local_only_enabled, require_local_provider
 from lib.project.project_manager import get_project_manager
 from lib.speech.character_voice import CharacterVoiceBinding, character_voice_binding
 
@@ -853,6 +854,20 @@ class ConfigResolver:
         整体为 async 并在同一 session 内完成。
         """
         from_project = _resolution_from_project(project, provider_id, model_id)
+        if local_only_enabled() and provider_id == "l20":
+            from lib.local_runtime.l20_capabilities import IMAGE_MODEL, IMAGE_SIZES, VIDEO_MODEL, VIDEO_RESOLUTIONS
+
+            if model_id == IMAGE_MODEL:
+                supported = IMAGE_SIZES
+            elif model_id == VIDEO_MODEL:
+                supported = VIDEO_RESOLUTIONS
+            else:
+                raise LocalOnlyPolicyError("The configured local L20 model is not supported")
+            if from_project is not None and from_project not in supported:
+                raise LocalOnlyPolicyError(
+                    f"The local L20 model {model_id} supports only {', '.join(supported)} resolution"
+                )
+            return from_project or supported[0]
         if from_project:
             return from_project
         # 仅自定义供应商才有 DB 侧默认；预置供应商在此直接 None，避免为热路径上的
@@ -1183,6 +1198,10 @@ class ConfigResolver:
         完整形态。payload 层与运行时身份收敛（如视频自定义供应商的有效身份收敛）不属于
         骨架，由各媒体的调用方在骨架外处理。
         """
+        if local_only_enabled():
+            if keys.media_type == "video" and keys.generation_type == "r2v":
+                raise LocalOnlyPolicyError("The protected L20 route requires storyboard first and target-tail frames")
+            return local_model_pair(keys.media_type)
         if project:
             for project_key in (keys.project_bucket_key, keys.project_default_key):
                 if project_key is None:
@@ -1223,6 +1242,10 @@ class ConfigResolver:
         两层解析出的身份都过能力闸（``_ensure_image_bucket_capability``）：图片侧的桶只在执行时
         才确定（``docs/adr/0001``），payload 层没有已物化的桶键可豁免。
         """
+        if local_only_enabled():
+            if payload and payload.get("image_provider"):
+                require_local_provider(str(payload["image_provider"]), "image")
+            return ProviderModel(*local_model_pair("image"))
         selected: ProviderModel | None = None
         if payload:
             provider_id = _trusted_payload_provider(payload.get("image_provider"))
@@ -1291,6 +1314,14 @@ class ConfigResolver:
         （``_ensure_video_identity_resolvable``），悬空即报错。锁定形态不丢弃不可信供应商——
         供应商已下线时回退等于换供应商执行。各层语义见 ``resolve_video_backend`` docstring。
         """
+        if local_only_enabled():
+            if generation_type == "r2v":
+                raise LocalOnlyPolicyError("The protected L20 route does not support reference-to-video")
+            if payload:
+                pinned = _payload_video_pinned_pair(payload, generation_type)
+                if pinned is not None and pinned[1] != local_model_pair("video"):
+                    raise LocalOnlyPolicyError("An in-flight video belongs to a different execution runtime")
+            return ProviderModel(*local_model_pair("video"))
         if payload:
             pinned = _payload_video_pinned_pair(payload, generation_type)
             if pinned is not None:
@@ -1472,6 +1503,10 @@ class ConfigResolver:
         payload 层服务于历史任务（携带 ``audio_provider`` + ``audio_model``）的排空。payload
         供应商须是已知供应商（见 ``_trusted_payload_provider``），否则回退 project/global。
         """
+        if local_only_enabled():
+            if payload and payload.get("audio_provider"):
+                require_local_provider(str(payload["audio_provider"]), "audio")
+            return ProviderModel(*local_model_pair("audio"))
         if payload:
             provider_id = _trusted_payload_provider(payload.get("audio_provider"))
             if provider_id is not None:
@@ -1683,6 +1718,7 @@ class ConfigResolver:
             "text_to_video": text_to_video,
             "first_frame": first_frame,
             "last_frame": last_frame,
+            **({"requires_end_frame": True} if local_only_enabled() and provider_id == "l20" else {}),
             "generate_audio": generate_audio,
             "requested_generate_audio": requested_generate_audio,
             "max_reference_audio_count": max_reference_audio_count,
@@ -1756,6 +1792,8 @@ class ConfigResolver:
 
     async def default_text_backend(self) -> tuple[str, str]:
         """返回 (provider_id, model_id)。"""
+        if local_only_enabled():
+            return local_model_pair("text")
         async with self._open_session() as (_session, svc):
             return await svc.get_default_text_backend()
 
@@ -1815,6 +1853,14 @@ class ConfigResolver:
         self, svc: ConfigService, session: AsyncSession
     ) -> dict[AutoResolvePurpose, tuple[str, str] | None]:
         """按各用途的键位调用自动推断层，与执行期解析落到这一层时的入参一致。"""
+        if local_only_enabled():
+            return {
+                "text": local_model_pair("text"),
+                "t2i": local_model_pair("image"),
+                "i2i": local_model_pair("image"),
+                "i2v": local_model_pair("video"),
+                "r2v": None,
+            }
         resolved: dict[AutoResolvePurpose, tuple[str, str] | None] = {}
         for purpose, keys in _AUTO_RESOLVE_PURPOSE_KEYS.items():
             try:
@@ -1839,6 +1885,10 @@ class ConfigResolver:
         只有具备该桶的默认模型算候选，否则 t2i 与 i2i 会静默拿到同一行。跨供应商的多个候选取第
         一个（各供应商各设默认是常态，与「同一供应商同桶两个默认」不同）。
         """
+        if local_only_enabled():
+            if media_type == "video" and generation_type == "r2v":
+                raise LocalOnlyPolicyError("The protected L20 route requires storyboard frames")
+            return local_model_pair(media_type)
         statuses = await svc.get_all_providers_status()
         ready = {s.name: s for s in statuses if s.status == "ready"}
 

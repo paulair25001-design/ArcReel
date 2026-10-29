@@ -172,13 +172,22 @@ class ConfigService:
         await self._provider_repo.delete(provider, key, flush=flush)
 
     async def get_all_providers_status(self) -> list[ProviderStatus]:
+        from lib.local_runtime.config import local_only_enabled
+        from lib.local_runtime.models import LOCAL_PROVIDERS
+
         cred_repo = CredentialRepository(self._provider_repo.session)
         active_creds = await cred_repo.get_active_credentials_bulk()
         credential_counts = await cred_repo.count_by_provider_bulk()
         disabled = await disabled_builtin_models(self._provider_repo.session)
         statuses = []
         for name, meta in PROVIDER_REGISTRY.items():
+            if local_only_enabled() and name not in LOCAL_PROVIDERS:
+                continue
+            if not local_only_enabled() and name in LOCAL_PROVIDERS:
+                continue
             status: Literal["ready", "unconfigured", "error"] = "ready" if name in active_creds else "unconfigured"
+            if local_only_enabled() and name in LOCAL_PROVIDERS:
+                status = "ready"
             # asdict 深拷贝 list/dict 字段，返回值不与模型目录共享引用，调用方改写不会波及目录。
             models_dict = {mid: asdict(mi) for mid, mi in catalog.list_models(name).items()}
             statuses.append(
@@ -251,12 +260,20 @@ class ConfigService:
 
     async def get_narration_voice(self) -> str:
         # 空白 setting 视为未配置，与项目级覆盖的 strip 语义一致，避免空音色进 TTS 请求
+        from lib.local_runtime.config import local_only_enabled
+
+        if local_only_enabled():
+            return "local-narrator"
         raw = await self._setting_repo.get("narration_voice", "")
         voice = raw.strip()
         return voice or _DEFAULT_NARRATION_VOICE
 
     async def get_narration_speed(self) -> float | None:
         """旁白语速（全局 setting）。未设置/损坏值返回 None，由各 audio backend 按自身能力处理。"""
+        from lib.local_runtime.config import local_only_enabled
+
+        if local_only_enabled():
+            return None
         raw = await self._setting_repo.get("narration_speed", "")
         return self.parse_narration_speed(raw)
 

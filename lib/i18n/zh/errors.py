@@ -787,4 +787,6 @@ MESSAGES = {
     "trash_restore_needs_character": "所属的角色「{name}」也已删除，只能随角色恢复：先在项目回收站里恢复这个角色，再恢复这条记录",
     "trash_restore_download_only": "这条删除记录已无法恢复，其中的结构文件只能下载",
     "trash_restore_target_blocked": "无法恢复到 {path}：路径上的目录已被替换为链接",
+    "local_only_external_inference_disabled": "当前只使用本地 Hermes、L20 图像和视频及免费本地配音。此连接测试或试运行已禁用。",
+    "local_video_end_frame_required": "L20 FastH3 需要目标尾帧。先在分镜中设置尾帧，再生成视频。",
 }

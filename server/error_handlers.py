@@ -25,6 +25,7 @@ from lib.generation.generation_queue_client import TaskSpecValidationError
 from lib.generation.task_failure import FAILURE_CODE_KEYS
 from lib.i18n import render_generation_input_error, render_message
 from lib.infra.api_errors import ApiError
+from lib.local_runtime.config import LocalOnlyPolicyError
 from lib.script.script_editor import ScriptEditError
 from server.i18n import get_translator, request_display_names
 from server.services.project.episode_display import present_request_diagnostics
@@ -87,6 +88,17 @@ def register_error_handlers(
     ``CORSMiddleware`` 配置一致（见 ``_handle_unexpected`` 内的说明与
     ``server/app.py`` 调用处），默认值对应「未配置 CORS」的保守场景。
     """
+
+    @app.exception_handler(LocalOnlyPolicyError)
+    async def _handle_local_only_policy(request: Request, exc: LocalOnlyPolicyError) -> JSONResponse:
+        logger.info("Local runtime policy refused %s: %s", request.url.path, exc)
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": get_translator(request)("local_only_external_inference_disabled"),
+                "code": "local_only_policy",
+            },
+        )
 
     @app.exception_handler(ApiError)
     async def _handle_api_error(request: Request, exc: ApiError) -> JSONResponse:

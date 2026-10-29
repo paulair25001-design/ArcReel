@@ -15,8 +15,10 @@ import json
 import logging
 import os
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from lib.agent.agent_memory_index import INDEX_FILENAME, truncate_memory_index
 from lib.agent.agent_memory_paths import is_valid_memory_user_id, project_memory_dir
@@ -32,9 +34,11 @@ from lib.db.engine import async_session_factory as default_async_session_factory
 from lib.i18n import DEFAULT_LOCALE, LOCALE_LANGUAGE_MAP
 from lib.infra.async_thread import run_sync_transaction
 from lib.infra.data_root_layout import DataRootLayout
+from lib.local_runtime.config import get_local_runtime_config, local_only_enabled
 from lib.prompts.prompt_templates.builtin import builtin_templates
 from server.agent_runtime.agent_access_policy import AgentAccessPolicy
 from server.agent_runtime.arcreel_mcp import build_arcreel_mcp_server
+from server.agent_runtime.hermes_client import HermesAgentOptions, recorded_hermes_home
 from server.auth import EMBEDDED_AGENT_SUB, create_token, is_auth_enabled
 
 logger = logging.getLogger(__name__)
@@ -50,6 +54,10 @@ _EMBEDDED_AGENT_TOKEN_EXPIRY_SECONDS = 15 * 60
 # 原样回显，Read 读图的 tool_result 也走同一条 stdout。按自身负载定额——5 张 ×
 # 1.5 MB 源 × 4/3 base64 ≈ 10 MB，取 32 MiB 留余量。官方无推荐值。
 CLI_STDOUT_MAX_BUFFER_BYTES = 32 * 1024 * 1024
+
+
+def _read_public_workflow() -> str:
+    return (Path(__file__).resolve().parents[2] / "skills/video-workflow/SKILL.md").read_text(encoding="utf-8")
 
 
 class AgentEnv(dict[str, str]):
@@ -255,6 +263,8 @@ class OptionsAssembler:
         The result is cached on first call so every session shares one instance
         instead of allocating a fresh store per ``build`` invocation.
         """
+        if local_only_enabled():
+            return None
         if self._cached_session_store is not None or self._session_store_resolved:
             return self._cached_session_store
 
@@ -289,6 +299,8 @@ class OptionsAssembler:
         ``session_id`` 以预先指定的 id 开一个全新会话（无历史可 resume），
         与 ``resume_id`` 互斥——SDK 只在 ``fork_session`` 下才允许两者并存。
         """
+        if local_only_enabled():
+            return await self._build_hermes_options(project_name, resume_id, locale, stderr, session_id)
         if not SDK_AVAILABLE:
             raise RuntimeError("claude_agent_sdk is not installed")
         if resume_id is not None and session_id is not None:
@@ -406,6 +418,58 @@ class OptionsAssembler:
             session_store_flush=session_store_flush_mode(),
             sandbox=sandbox_typed,  # type: ignore[arg-type]  # SDK 的 SandboxSettings TypedDict 未声明 filesystem 子结构，CLI 按 JSON 透传接受
             env=provider_env,
+            stderr=stderr,
+        )
+
+    async def _build_hermes_options(
+        self,
+        project_name: str,
+        resume_id: str | None,
+        locale: str,
+        stderr: Callable[[str], None] | None,
+        session_id: str | None,
+    ) -> HermesAgentOptions:
+        from server.local_runtime_access import ensure_project_mcp_token
+
+        if resume_id is not None and session_id is not None:
+            raise ValueError("resume_id and session_id are mutually exclusive")
+        project_cwd = await asyncio.to_thread(self._resolve_project_cwd, project_name)
+        config = replace(get_local_runtime_config(), hermes_mcp_token=await ensure_project_mcp_token(project_name))
+        user_id = self._user_id_provider()
+        if resume_id is not None:
+            home = await asyncio.to_thread(recorded_hermes_home, config, resume_id, user_id)
+            if home is None:
+                raise RuntimeError(
+                    "The local Hermes session binding is missing; refusing to start an empty replacement"
+                )
+        else:
+            home = config.hermes_home / "sessions" / uuid4().hex
+        workflow = await asyncio.to_thread(_read_public_workflow)
+        language = LOCALE_LANGUAGE_MAP.get(locale, "中文")
+        prompt = (
+            f"你是 ArcReel 的本地 Hermes 制作助手。用{language}与用户交流。\n"
+            f"当前唯一项目是 {json.dumps(project_name, ensure_ascii=False)}。所有项目工具调用都显式传入这个 project。\n"
+            "全部推理使用本机模型，图片和视频使用 ArcReel 配置的本地供应商，配音只使用免费本地引擎；任何故障均不得回退云端。\n"
+            "项目数据只经 ArcReel MCP 工具读取和修改。先读取 get_workflow_plan，再执行用户授权的当前动作。\n"
+            "用户只问状态或要求研究时只读。修改和生成保留已完成内容；遇到不确定在途任务先查询，不重复提交。\n"
+            "只使用本仓库 ArcReel 的原生工作流和工具，不接入外部工厂、旧技能流程或额外审核编排。\n"
+            "内容按 source → script_plan → 内容确认 → 正式脚本视觉提示推进；内容确认使用原生 confirm_script_review，"
+            "视觉提示生成不改变已确认的正文、时长或资产引用。用户只授权准备草稿时，不写入正式项目。\n"
+            "生成前通过 get_video_capabilities 和当前工具返回的供应商能力核实模式、时长、尺寸和参考图限制；"
+            "缺项就报告，不静默删除引用，也不凭旧流程假定首尾帧或审核要求。\n"
+            "图像、抽帧、媒体技术检查不能证明真实听审、连续播放或精确口型；没有相应证据时明确保留待核项。\n\n"
+            + workflow
+        )
+        return HermesAgentOptions(
+            config=config,
+            cwd=project_cwd,
+            home=home,
+            project_name=project_name,
+            system_prompt=prompt,
+            user_id=user_id,
+            resume=resume_id,
+            session_id=session_id,
+            env=AgentEnv({}, agent_pricing=AgentPricing(multiplier=0)),
             stderr=stderr,
         )
 

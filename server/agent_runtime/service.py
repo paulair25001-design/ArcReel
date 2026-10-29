@@ -7,7 +7,7 @@ import copy
 import logging
 import os
 from collections import OrderedDict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -33,9 +33,11 @@ from fastapi.sse import ServerSentEvent
 from lib.agent.agent_profile import agent_profile_dir
 from lib.agent.profile_frontmatter import FrontmatterError, parse_profile_metadata
 from lib.agent.profile_manifest import VALID_CONTENT_MODES
+from lib.db.base import DEFAULT_USER_ID
 from lib.i18n import DEFAULT_LOCALE
 from lib.infra.async_thread import run_sync_transaction
 from lib.infra.data_root_layout import DataRootLayout
+from lib.local_runtime.config import get_local_runtime_config, local_only_enabled
 from lib.project.project_manager import ProjectManager
 from server.agent_runtime.event_log import (
     EventLogService,
@@ -43,6 +45,7 @@ from server.agent_runtime.event_log import (
     build_failure_entry,
     build_user_entry,
 )
+from server.agent_runtime.hermes_client import delete_hermes_session
 from server.agent_runtime.keyed_locks import KeyedLocks
 from server.agent_runtime.models import (
     Heartbeat,
@@ -177,7 +180,7 @@ class AssistantService:
     ) -> list[SessionMeta]:
         """List sessions, injecting SDK summary as title when available."""
         sessions = await self.meta_store.list(project_name=project_name, status=status, limit=limit, offset=offset)
-        if not sessions or not project_name:
+        if local_only_enabled() or not sessions or not project_name:
             return sessions
 
         project_cwd = str(self.layout.projects_dir / project_name)
@@ -217,13 +220,41 @@ class AssistantService:
 
     async def delete_session(self, session_id: str) -> bool:
         """Delete session and cleanup."""
+        if local_only_enabled():
+            meta = await self.meta_store.get(session_id)
+            if meta is not None:
+                from server.local_runtime_sessions import local_project_lock
+
+                async with local_project_lock(meta.project_name):
+                    return await self._delete_session_and_cleanup(session_id)
+        return await self._delete_session_and_cleanup(session_id)
+
+    async def _delete_session_and_cleanup(self, session_id: str) -> bool:
         if session_id in self.session_manager.sessions:
             await self.session_manager.close_session(
                 session_id,
                 reason="session deleted",
             )
 
-        if self._session_store is not None and delete_session_via_store is not None:
+        if local_only_enabled():
+            meta = await self.meta_store.get(session_id)
+            if meta is not None:
+                from server.local_runtime_sessions import (
+                    has_other_project_activity,
+                    schedule_local_project_finalization,
+                )
+
+                if not has_other_project_activity(
+                    meta.project_name, session_id, self.session_manager.sessions.values()
+                ):
+                    schedule_local_project_finalization(meta.project_name)
+                await delete_hermes_session(
+                    get_local_runtime_config(),
+                    project_cwd=self.layout.projects_dir / meta.project_name,
+                    user_id=getattr(self.session_manager, "_user_id", DEFAULT_USER_ID),
+                    session_id=session_id,
+                )
+        elif self._session_store is not None and delete_session_via_store is not None:
             # SDK derives project_key from `directory`; without it the key is
             # computed from server cwd and never matches inserted rows, so the
             # delete becomes a silent no-op. Resolve project cwd from meta.
@@ -251,6 +282,15 @@ class AssistantService:
         return await self.meta_store.delete(session_id)
 
     # ==================== Messages ====================
+
+    @staticmethod
+    async def _with_local_project_turn[T](project: str, operation: Callable[[], Awaitable[T]]) -> T:
+        if local_only_enabled():
+            from server.local_runtime_sessions import local_project_turn
+
+            async with local_project_turn(project):
+                return await operation()
+        return await operation()
 
     def _prepare_content(
         self,
@@ -309,13 +349,16 @@ class AssistantService:
                 await self.event_log.ensure_backfilled(
                     session_id, await self._aresolve_project_cwd_safe(meta.project_name)
                 )
-                accepted = await self.session_manager.send_message(
-                    session_id,
-                    prompt,
-                    meta=meta,
-                    locale=locale,
-                    user_entry=self._build_user_log_entry(prompt),
-                    client_key=client_key,
+                accepted = await self._with_local_project_turn(
+                    project_name,
+                    lambda: self.session_manager.send_message(
+                        session_id,
+                        prompt,
+                        meta=meta,
+                        locale=locale,
+                        user_entry=self._build_user_log_entry(prompt),
+                        client_key=client_key,
+                    ),
                 )
             return self._accepted_response(session_id, accepted)
         # New session
@@ -410,12 +453,15 @@ class AssistantService:
     ) -> dict[str, Any]:
         """实际创建新会话并投递首条消息，不涉及 client_key 幂等映射记账。"""
         prompt = self._prepare_content(content, images)
-        new_sdk_session_id = await self.session_manager.send_new_session(
+        new_sdk_session_id = await self._with_local_project_turn(
             project_name,
-            prompt,
-            locale=locale,
-            user_entry=self._build_user_log_entry(prompt),
-            client_key=client_key,
+            lambda: self.session_manager.send_new_session(
+                project_name,
+                prompt,
+                locale=locale,
+                user_entry=self._build_user_log_entry(prompt),
+                client_key=client_key,
+            ),
         )
         managed = self.session_manager.sessions.get(new_sdk_session_id)
         entry = managed.initial_user_log_entry if managed is not None else None
@@ -498,6 +544,10 @@ class AssistantService:
             raise FileNotFoundError(f"session not found: {session_id}")
 
         if self._session_store is None:
+            if local_only_enabled():
+                raise RewriteUnavailableError(
+                    "Local Hermes message rewriting is unavailable; continue this session or create a new session"
+                )
             raise RewriteUnavailableError(
                 "message rewrite requires the DB transcript store (ARCREEL_SDK_SESSION_STORE=db)"
             )
@@ -686,7 +736,10 @@ class AssistantService:
             meta = await self.meta_store.get(session_id)
             if meta is None or meta.project_name != project_name:
                 raise FileNotFoundError(f"session not found: {session_id}")
-            queued = await self.session_manager.resend_queued_message(session_id, message_id, meta=meta, locale=locale)
+            queued = await self._with_local_project_turn(
+                project_name,
+                lambda: self.session_manager.resend_queued_message(session_id, message_id, meta=meta, locale=locale),
+            )
         return {"session_id": session_id, "id": message_id, "queued_message": queued.to_payload()}
 
     async def send_queued_message_now(self, project_name: str, session_id: str, message_id: str) -> dict[str, Any]:
@@ -700,7 +753,9 @@ class AssistantService:
             raise FileNotFoundError(f"session not found: {session_id}")
         # 同撤回：不与发送重建连接交错；对「未发送」消息还会自己重建连接，与重新发送一样串行
         async with self._admission_locks.lock_for(session_id):
-            outcome = await self.session_manager.send_queued_message_now(session_id, message_id)
+            outcome = await self._with_local_project_turn(
+                project_name, lambda: self.session_manager.send_queued_message_now(session_id, message_id)
+            )
         return {"session_id": session_id, "id": message_id, "outcome": outcome}
 
     async def interrupt_session(self, session_id: str, *, meta: SessionMeta | None = None) -> dict[str, Any]:
@@ -709,7 +764,24 @@ class AssistantService:
             meta = await self.meta_store.get(session_id)
             if meta is None:
                 raise FileNotFoundError(f"session not found: {session_id}")
-        session_status = await self.session_manager.interrupt_session(session_id)
+        if local_only_enabled():
+            from server.local_runtime_sessions import (
+                has_other_project_activity,
+                local_project_lock,
+                schedule_local_project_finalization,
+            )
+
+            async with local_project_lock(meta.project_name):
+                session_status = await self.session_manager.interrupt_session(session_id)
+                if not has_other_project_activity(
+                    meta.project_name, session_id, self.session_manager.sessions.values()
+                ):
+                    stopped = self.session_manager.sessions.get(session_id)
+                    schedule_local_project_finalization(
+                        meta.project_name, ready=lambda: stopped is None or stopped.status != "running"
+                    )
+        else:
+            session_status = await self.session_manager.interrupt_session(session_id)
         return {
             "status": "accepted",
             "session_id": session_id,

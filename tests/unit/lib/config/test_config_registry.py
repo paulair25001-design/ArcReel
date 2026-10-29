@@ -20,6 +20,9 @@ def test_all_providers_registered():
         "minimax",
         "kling",
         "agnes",
+        "local-hermes",
+        "l20",
+        "local-tts",
     }
 
 

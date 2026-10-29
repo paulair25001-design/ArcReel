@@ -17,7 +17,9 @@ from lib.speech.narration_config import (
     NARRATION_DELIVERY_FIELD,
     POST_PRODUCTION,
     TTS_BACKEND_FIELD,
+    TTS_INSTRUCTIONS_FIELD,
     TTS_SPEED_FIELD,
+    TTS_VOICE_DESCRIPTION_FIELD,
     TTS_VOICE_FIELD,
     USE_TTS,
     NarrationConfigError,
@@ -40,6 +42,8 @@ class NarrationSettingsInput:
     narration_voice: str | None = None
     narration_speed: float | None = None
     provided: frozenset[str] = frozenset()
+    narration_voice_description: str | None = None
+    narration_instructions: str | None = None
 
 
 def validate_tts_backend(value: str) -> str:
@@ -133,6 +137,12 @@ async def new_project_narration_fields(
         fields[TTS_VOICE_FIELD] = voice.strip()
     if speed is not None:
         fields[TTS_SPEED_FIELD] = validate_tts_speed(speed)
+    for key, text in (
+        (TTS_VOICE_DESCRIPTION_FIELD, value.narration_voice_description),
+        (TTS_INSTRUCTIONS_FIELD, value.narration_instructions),
+    ):
+        if text is not None and text.strip():
+            fields[key] = text.strip()
     validate_project_narration_config(fields)
     return fields
 

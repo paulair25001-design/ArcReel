@@ -7,7 +7,7 @@
 只有生成旁白配音要求项目当前选的是 TTS 配音。旁白配音的时效按当前快照复算，修改快照后，
 按旧设置生成的配音读作 stale。
 
-本模块只依赖标准库，``lib.project`` 等底层模块可以直接引用。
+本模块在解析本地模式时读取纯配置策略，不构造后端或调用语音引擎。
 """
 
 from __future__ import annotations
@@ -27,19 +27,33 @@ NARRATION_DELIVERY_FIELD = "narration_delivery"
 TTS_BACKEND_FIELD = "audio_backend"
 TTS_VOICE_FIELD = "narration_voice"
 TTS_SPEED_FIELD = "narration_speed"
-NARRATION_CONFIG_FIELDS = (NARRATION_DELIVERY_FIELD, TTS_BACKEND_FIELD, TTS_VOICE_FIELD, TTS_SPEED_FIELD)
+TTS_VOICE_DESCRIPTION_FIELD = "narration_voice_description"
+TTS_INSTRUCTIONS_FIELD = "narration_instructions"
+LOCAL_NARRATOR_VOICE = "local-narrator"
+DEFAULT_VOICE_DESCRIPTION = "成年中文女声，中低音，温暖清楚，贴近朋友聊天"
+DEFAULT_INSTRUCTIONS = "自然清楚地讲述，按语义停顿，避免播音腔。"
+NARRATION_CONFIG_FIELDS = (
+    NARRATION_DELIVERY_FIELD,
+    TTS_BACKEND_FIELD,
+    TTS_VOICE_FIELD,
+    TTS_SPEED_FIELD,
+    TTS_VOICE_DESCRIPTION_FIELD,
+    TTS_INSTRUCTIONS_FIELD,
+)
 #: 自这一项目 schema 起 TTS 快照是旁白配音时效的输入；更早的 schema 没有快照。
 PROJECT_TTS_SNAPSHOT_SCHEMA_VERSION = 16
 
 
 @dataclass(frozen=True, slots=True)
 class TtsSynthesisSettings:
-    """Resolved paid-synthesis inputs that participate in TTS currency."""
+    """Resolved synthesis inputs that participate in TTS currency."""
 
     provider_id: str
     model_id: str
     voice: str
     speed: float | None
+    voice_description: str | None = None
+    instructions: str | None = None
 
     def __post_init__(self) -> None:
         if not self.provider_id.strip():
@@ -50,6 +64,9 @@ class TtsSynthesisSettings:
             raise ValueError("voice must be non-empty")
         if self.speed is not None and (not math.isfinite(self.speed) or self.speed <= 0):
             raise ValueError("speed must be positive and finite or null")
+        for value in (self.voice_description, self.instructions):
+            if value is not None and not value.strip():
+                raise ValueError("voice description and instructions must be non-empty strings or null")
 
 
 class NarrationConfigError(ValueError):
@@ -99,6 +116,24 @@ def project_narration_delivery(project: Mapping[str, object]) -> NarrationDelive
 def project_tts_settings(project: Mapping[str, object]) -> TtsSynthesisSettings | None:
     """项目的 TTS 快照；模型或音色缺失、语速损坏时返回 None。不读取交付方式。"""
 
+    from lib.local_runtime.config import TTS_MODEL, TTS_PROVIDER, local_only_enabled
+
+    description = project.get(TTS_VOICE_DESCRIPTION_FIELD)
+    instructions = project.get(TTS_INSTRUCTIONS_FIELD)
+    if any(value is not None and not isinstance(value, str) for value in (description, instructions)):
+        return None
+    description = description.strip() or None if isinstance(description, str) else None
+    instructions = instructions.strip() or None if isinstance(instructions, str) else None
+    if local_only_enabled():
+        return TtsSynthesisSettings(
+            provider_id=TTS_PROVIDER,
+            model_id=TTS_MODEL,
+            voice=LOCAL_NARRATOR_VOICE,
+            speed=None,
+            voice_description=description or DEFAULT_VOICE_DESCRIPTION,
+            instructions=instructions or DEFAULT_INSTRUCTIONS,
+        )
+
     backend = parse_tts_backend(project.get(TTS_BACKEND_FIELD))
     voice = project.get(TTS_VOICE_FIELD)
     if backend is None or not isinstance(voice, str) or not voice.strip():
@@ -107,17 +142,29 @@ def project_tts_settings(project: Mapping[str, object]) -> TtsSynthesisSettings 
     speed = parse_tts_speed(raw_speed)
     if raw_speed is not None and speed is None:
         return None
-    return TtsSynthesisSettings(provider_id=backend[0], model_id=backend[1], voice=voice.strip(), speed=speed)
+    return TtsSynthesisSettings(
+        provider_id=backend[0],
+        model_id=backend[1],
+        voice=voice.strip(),
+        speed=speed,
+        voice_description=description,
+        instructions=instructions,
+    )
 
 
 def tts_snapshot_fields(settings: TtsSynthesisSettings) -> dict[str, object]:
     """把 TTS 设置写成 project.json 快照字段；``narration_speed`` 为 None 时调用方删除该键。"""
 
-    return {
+    fields: dict[str, object] = {
         TTS_BACKEND_FIELD: f"{settings.provider_id}/{settings.model_id}",
         TTS_VOICE_FIELD: settings.voice,
         TTS_SPEED_FIELD: settings.speed,
     }
+    if settings.voice_description is not None:
+        fields[TTS_VOICE_DESCRIPTION_FIELD] = settings.voice_description
+    if settings.instructions is not None:
+        fields[TTS_INSTRUCTIONS_FIELD] = settings.instructions
+    return fields
 
 
 def _missing_snapshot_code(project: Mapping[str, object]) -> str:
@@ -158,12 +205,17 @@ class ProjectTtsSettingsResolver:
 
 
 __all__ = [
+    "DEFAULT_INSTRUCTIONS",
+    "DEFAULT_VOICE_DESCRIPTION",
+    "LOCAL_NARRATOR_VOICE",
     "NARRATION_CONFIG_FIELDS",
     "NARRATION_DELIVERY_FIELD",
     "POST_PRODUCTION",
     "PROJECT_TTS_SNAPSHOT_SCHEMA_VERSION",
     "TTS_BACKEND_FIELD",
+    "TTS_INSTRUCTIONS_FIELD",
     "TTS_SPEED_FIELD",
+    "TTS_VOICE_DESCRIPTION_FIELD",
     "TTS_VOICE_FIELD",
     "USE_TTS",
     "NarrationConfigError",

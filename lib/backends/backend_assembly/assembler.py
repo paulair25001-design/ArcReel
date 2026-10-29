@@ -51,6 +51,9 @@ async def assemble_backend(
     ``generation_type`` 是调用点所属的任务类型桶，只在自定义侧消费（默认模型按桶分槽，见
     ``lib.custom_provider.loader.load_custom_backend``）；内置侧的 model 由 registry 定，不分桶。
     """
+    from lib.local_runtime.config import require_local_provider
+
+    require_local_provider(provider_id, media_type)
     if is_custom_provider(provider_id):
         from lib.custom_provider.loader import load_custom_backend
 

@@ -84,7 +84,9 @@ from lib.speech.narration_config import (
     NARRATION_DELIVERY_FIELD,
     POST_PRODUCTION,
     TTS_BACKEND_FIELD,
+    TTS_INSTRUCTIONS_FIELD,
     TTS_SPEED_FIELD,
+    TTS_VOICE_DESCRIPTION_FIELD,
     TTS_VOICE_FIELD,
     NarrationConfigError,
     NarrationDelivery,
@@ -319,6 +321,8 @@ class CreateProjectRequest(BaseModel):
     audio_backend: str | None = None
     narration_voice: str | None = None
     narration_speed: float | None = None
+    narration_voice_description: str | None = None
+    narration_instructions: str | None = None
 
 
 class EpisodePatch(BaseModel):
@@ -358,6 +362,8 @@ class UpdateProjectRequest(BaseModel):
     audio_backend: str | None = None
     narration_voice: str | None = None
     narration_speed: float | None = None
+    narration_voice_description: str | None = None
+    narration_instructions: str | None = None
     # 口播语速估算（阅读单位 / 秒）项目级覆盖；null = 清除、回退语言默认
     speech_rate_units_per_second: SpeechRateOverride = None
     # 文本任务档位（docs/adr/0051）项目级覆盖 + 项目默认模型；空值 = 清除、继承全局
@@ -401,6 +407,13 @@ def _apply_narration_patch(project: dict, req: UpdateProjectRequest) -> None:
                 project.pop(TTS_SPEED_FIELD, None)
             else:
                 project[TTS_SPEED_FIELD] = validate_tts_speed(req.narration_speed)
+        for key in (TTS_VOICE_DESCRIPTION_FIELD, TTS_INSTRUCTIONS_FIELD):
+            if key in fields:
+                text = (getattr(req, key) or "").strip()
+                if text:
+                    project[key] = text
+                else:
+                    project.pop(key, None)
         validate_project_narration_config(project)
     except NarrationConfigError as exc:
         raise UnprocessableError(exc.code) from exc
@@ -682,6 +695,8 @@ async def create_project(
                     audio_backend=req.audio_backend,
                     narration_voice=req.narration_voice,
                     narration_speed=req.narration_speed,
+                    narration_voice_description=req.narration_voice_description,
+                    narration_instructions=req.narration_instructions,
                     provided=frozenset(req.model_fields_set & {TTS_BACKEND_FIELD, TTS_VOICE_FIELD, TTS_SPEED_FIELD}),
                 ),
                 resolver=ConfigResolver(async_session_factory),

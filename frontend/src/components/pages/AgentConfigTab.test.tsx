@@ -121,6 +121,40 @@ describe("AgentConfigTab", () => {
     vi.restoreAllMocks();
   });
 
+  it.each([true, false])("本地模式展示实际模型与能力限制，并隐藏云端凭证入口（就绪：%s）", async (agentAvailable) => {
+    setupBaseMocks();
+    useConfigStatusStore.setState({
+      initialized: true,
+      isEmbeddedAgentConfigured: agentAvailable,
+      executionRuntime: {
+        mode: "local-hermes-l20",
+        agent_available: agentAvailable,
+        agent_model: "Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp",
+        image_model: "l20/qwen-image-2.1-int8",
+        video_model: "l20/fasth3-v2-4step",
+        audio_model: "local-tts/qwen3-tts-voice-design",
+        cloud_fallback: false,
+      },
+    });
+    renderSection();
+
+    expect(await screen.findByText("Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp")).toBeInTheDocument();
+    expect(screen.getAllByRole("definition").map((element) => element.textContent)).toEqual([
+      "Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp",
+      "l20/qwen-image-2.1-int8",
+      "l20/fasth3-v2-4step",
+      "local-tts/qwen3-tts-voice-design",
+    ]);
+    expect(screen.getByText(/视频固定为 576p/)).toHaveTextContent("图片编辑最多引用 2 张图");
+    expect(screen.getByText(/视频固定为 576p/)).toHaveTextContent("不提供数值语速");
+    expect(screen.queryByRole("note", { name: "ArcReel Agent 尚未配置" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/还没有 Agent 供应商/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "外部 Agent" })).not.toBeInTheDocument();
+    expect(API.listAgentCredentials).not.toHaveBeenCalled();
+    const localNotice = screen.queryByRole("note", { name: "本地 Hermes 尚未就绪" });
+    expect(localNotice !== null).toBe(!agentAvailable);
+  });
+
   it("没有生效的 Agent 供应商时，在本分区就地提示内嵌 Agent 未配置", async () => {
     setupBaseMocks();
     useConfigStatusStore.setState({ initialized: true, isEmbeddedAgentConfigured: false });

@@ -850,4 +850,6 @@ MESSAGES = {
     "trash_restore_needs_character": "Nhân vật «{name}» chứa mục này cũng đã bị xóa nên chỉ có thể khôi phục cùng nhân vật: hãy khôi phục nhân vật từ thùng rác dự án trước, rồi khôi phục bản ghi này",
     "trash_restore_download_only": "Không thể khôi phục bản ghi xóa này nữa; các tệp cấu trúc trong đó chỉ có thể tải xuống",
     "trash_restore_target_blocked": "Không thể khôi phục về {path}: một thư mục trên đường dẫn đã bị thay bằng liên kết",
+    "local_only_external_inference_disabled": "Đang dùng Hermes cục bộ, hình ảnh và video L20 cùng giọng nói cục bộ miễn phí. Đã tắt thử kết nối và chạy thử nhà cung cấp khác.",
+    "local_video_end_frame_required": "L20 FastH3 cần khung hình cuối mục tiêu. Đặt khung hình cuối của cảnh trước khi tạo video.",
 }

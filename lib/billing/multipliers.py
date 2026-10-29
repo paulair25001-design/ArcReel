@@ -64,6 +64,10 @@ def parse_multiplier(raw: str) -> float | None:
 
 async def get_provider_multiplier(session: AsyncSession, provider_id: str) -> float:
     """供应商当前生效的倍率：用户设置过的值，否则为默认值。"""
+    from lib.local_runtime.models import LOCAL_PROVIDERS
+
+    if provider_id in LOCAL_PROVIDERS:
+        return 0.0
     raw = (await ProviderConfigRepository(session).get_all(provider_id)).get(PROVIDER_MULTIPLIER_KEY)
     parsed = parse_multiplier(raw) if raw is not None else None
     return parsed if parsed is not None else await get_default_provider_multiplier(session, provider_id)

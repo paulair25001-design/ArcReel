@@ -33,4 +33,7 @@ MESSAGES: dict[str, str] = {
     "preset_notes_xiaomi_mimo": "Xiaomi MiMo chỉ chấp nhận tên model đã biết; không có danh sách model công khai.",
     "preset_notes_ark_coding_plan": "Gói Volcengine Ark Coding Plan; không có endpoint danh sách model — hãy chọn model gợi ý đã bật trong bảng điều khiển Ark.",
     "preset_notes_ark_agent_plan": "Gói Volcengine Ark Agent Plan; không có endpoint danh sách model — hãy chọn model gợi ý có trong gói của bạn.",
+    "provider_desc_local-hermes": "Hermes và oMLX cục bộ cho hội thoại, lập kế hoạch và văn bản có cấu trúc",
+    "provider_desc_l20": "Qwen-Image và FastH3 trên L20 qua bộ điều khiển được bảo vệ",
+    "provider_desc_local-tts": "Giọng nói ngoại tuyến miễn phí bằng Qwen3-TTS cục bộ",
 }

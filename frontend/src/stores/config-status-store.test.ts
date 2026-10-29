@@ -93,6 +93,32 @@ describe("config-status-store", () => {
     expect(isEmbeddedAgentConfigured).toBe(true);
   });
 
+  it.each([true, false])("local agent readiness takes priority over cloud credentials: %s", async (agentAvailable) => {
+    const runtime = {
+      mode: "local-hermes-l20" as const,
+      agent_available: agentAvailable,
+      agent_model: "local-qwen",
+      image_model: "l20/qwen-image-2.1-int8",
+      video_model: "l20/fasth3-v2-4step",
+      audio_model: "local-tts/qwen3-tts-voice-design",
+      cloud_fallback: false as const,
+    };
+    vi.spyOn(API, "getSystemConfig").mockResolvedValue(
+      makeConfigResponse({ execution_runtime: runtime, anthropic_api_key: { is_set: true, masked: "stored-cloud-key" } }),
+    );
+    vi.spyOn(API, "getProviders").mockResolvedValue(makeProviders());
+    vi.spyOn(API, "listCustomProviders").mockResolvedValue({ providers: [] });
+
+    await useConfigStatusStore.getState().fetch();
+
+    expect(useConfigStatusStore.getState().executionRuntime).toEqual(runtime);
+    expect(useConfigStatusStore.getState().isEmbeddedAgentConfigured).toBe(agentAvailable);
+    vi.spyOn(API, "getSystemConfig").mockRejectedValue(new Error("runtime unavailable"));
+    await useConfigStatusStore.getState().refresh();
+    expect(useConfigStatusStore.getState().executionRuntime).toEqual({ ...runtime, agent_available: false });
+    expect(useConfigStatusStore.getState().isEmbeddedAgentConfigured).toBe(false);
+  });
+
   it("allows fetch to retry after a transient error", async () => {
     vi.spyOn(API, "getProviders")
       .mockRejectedValueOnce(new Error("temporary failure"))

@@ -28,6 +28,7 @@ from lib.db.models.config import SystemSetting
 from lib.i18n import DEFAULT_LOCALE, MESSAGES
 from lib.infra.api_errors import ApiError, BadGatewayError, ConflictError
 from lib.infra.httpx_shared import get_http_client
+from lib.local_runtime.config import local_only_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ _UNKNOWN_ERROR_KEY = "official_service_error_unknown"
 
 def official_service_url() -> str:
     """环境变量存在（含空串）即以它为准；为空表示关闭。"""
+    if local_only_enabled():
+        return ""
     raw = os.environ.get(OFFICIAL_SERVICE_URL_ENV)
     return (DEFAULT_OFFICIAL_SERVICE_URL if raw is None else raw).strip().rstrip("/")
 

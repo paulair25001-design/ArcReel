@@ -33,4 +33,7 @@ MESSAGES: dict[str, str] = {
     "preset_notes_xiaomi_mimo": "小米 MiMo 仅支持已知模型名，未公开模型列表",
     "preset_notes_ark_coding_plan": "火山方舟 Coding Plan 套餐；不提供模型列表接口，请从建议模型中选择已在控制台开通的模型",
     "preset_notes_ark_agent_plan": "火山方舟 Agent Plan 套餐；不提供模型列表接口，请从建议模型中选择当前套餐已开通的模型",
+    "provider_desc_local-hermes": "通过本地 Hermes 调用本机 oMLX，处理对话、规划和结构化文本",
+    "provider_desc_l20": "通过受保护控制器调用自有 L20 的 Qwen-Image 和 FastH3",
+    "provider_desc_local-tts": "使用本机 Qwen3-TTS 离线生成免费配音",
 }

@@ -705,6 +705,8 @@ async def execute_tts_task(
                 tts_model_id=settings.model_id,
                 tts_voice=settings.voice,
                 tts_speed=settings.speed,
+                tts_voice_description=settings.voice_description,
+                tts_instructions=settings.instructions,
                 tts_basis_digest=None,
                 tts_actual_duration_seconds=duration_seconds,
             )
@@ -722,6 +724,8 @@ async def execute_tts_task(
             "tts_model_id": settings.model_id,
             "tts_voice": settings.voice,
             "tts_speed": settings.speed,
+            "tts_voice_description": settings.voice_description,
+            "tts_instructions": settings.instructions,
             "tts_basis_digest": committed_basis.digest,
             "artifact_episode": committed_episode,
             "artifact_audio_basis": ArtifactBasisDescriptor.from_basis(committed_basis).to_dict(),
@@ -847,6 +851,8 @@ async def execute_tts_task(
         resource_id=resource_id,
         voice=voice,
         speed=speed,
+        voice_description=settings.voice_description,
+        instructions=settings.instructions,
         task_id=task_id,
         before_submit=_before_submit,
         before_commit=_measure_staged,
@@ -855,6 +861,8 @@ async def execute_tts_task(
         tts_model_id=settings.model_id,
         tts_voice=settings.voice,
         tts_speed=settings.speed,
+        tts_voice_description=settings.voice_description,
+        tts_instructions=settings.instructions,
         tts_basis_digest=basis.digest if basis is not None else None,
     )
 

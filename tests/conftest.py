@@ -35,6 +35,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+# The upstream compatibility suite exercises explicitly configured providers.
+# Local-runtime cases opt in per test; the application default remains local-only.
+os.environ.setdefault("ARCREEL_LOCAL_ONLY", "false")
+
 # pytest 收集期解析命令行位置参数、并对缺失项抛 UsageError 的同一入口；
 # 下方 `pytest_sessionstart` 复用它，使会话启动期的校验与收集期同源。
 from _pytest.main import resolve_collection_argument
@@ -85,6 +89,11 @@ if not os.environ.get("DATABASE_URL", "").strip() or os.environ.get(_OWNED_DB_MA
 _OWNED_TEST_HOME_DIR = tempfile.mkdtemp(prefix="arcreel-test-home-")
 os.environ["ARCREEL_DATA_DIR"] = str(Path(_OWNED_TEST_HOME_DIR) / "data")
 os.environ["CLAUDE_CONFIG_DIR"] = str(Path(_OWNED_TEST_HOME_DIR) / "claude-config")
+os.environ["ARCREEL_L20_DIRECT_STATE_DIR"] = str(Path(_OWNED_TEST_HOME_DIR) / "l20-direct")
+os.environ["ARCREEL_L20_SSH_TARGET"] = "arcreel-test-unconfigured"
+os.environ["ARCREEL_L20_SSH_OPTIONS_JSON"] = "[]"
+os.environ["ARCREEL_L20_COMFY_URL"] = "http://127.0.0.1:9"
+os.environ["ARCREEL_L20_ROUTER_URL"] = "http://127.0.0.1:9"
 os.environ.pop("AI_ANIME_PROJECTS", None)
 
 

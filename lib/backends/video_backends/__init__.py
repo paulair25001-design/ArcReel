@@ -76,3 +76,7 @@ from lib.backends.providers import PROVIDER_AGNES
 from lib.backends.video_backends.agnes import AgnesVideoBackend
 
 register_backend(PROVIDER_AGNES, AgnesVideoBackend)
+
+from lib.backends.video_backends.l20_factory import L20VideoFactory
+
+register_backend("l20", L20VideoFactory())

@@ -401,6 +401,23 @@ async def get_system_config(
         "market_github_proxy_prefix": all_s.get(PROXY_PREFIX_SETTING) or "",
     }
 
+    from lib.local_runtime.config import local_model_pair, local_only_enabled
+
+    if local_only_enabled():
+        from server.local_runtime import local_runtime_status
+
+        settings["execution_runtime"] = await local_runtime_status()
+        for media in ("video", "image", "text", "audio"):
+            settings[f"default_{media}_backend"] = "/".join(local_model_pair(media))
+        settings["default_video_backend_i2v"] = settings["default_video_backend"]
+        settings["default_video_backend_r2v"] = ""
+        settings["default_image_backend_t2i"] = settings["default_image_backend"]
+        settings["default_image_backend_i2i"] = settings["default_image_backend"]
+        settings["text_backend_simple"] = settings["default_text_backend"]
+        settings["text_backend_complex"] = settings["default_text_backend"]
+        settings["narration_voice"] = "local-narrator"
+        settings["narration_speed"] = None
+
     options = await _build_options(svc, session, locale)
 
     return {"settings": settings, "options": options}

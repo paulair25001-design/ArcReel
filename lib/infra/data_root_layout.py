@@ -120,6 +120,21 @@ class DataRootLayout:
         return self.root / "runtime"
 
     @property
+    def hermes_runtime_dir(self) -> Path:
+        """Isolated Hermes configuration, credentials and session state."""
+        return self.runtime_dir / "hermes"
+
+    @property
+    def l20_runtime_dir(self) -> Path:
+        """Protected L20 session records shared by image and video execution."""
+        return self.runtime_dir / "l20"
+
+    @property
+    def tts_receipts_dir(self) -> Path:
+        """Unmodified receipts proving the free local speech execution route."""
+        return self.runtime_dir / "tts" / "receipts"
+
+    @property
     def system_dirs(self) -> tuple[Path, ...]:
         """数据根下由布局登记的、项目目录以外的顶层目录。
 

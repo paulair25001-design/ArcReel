@@ -1,5 +1,7 @@
 """语音合成（TTS）服务层公共 API。"""
 
+from typing import Any
+
 from lib.backends.audio_backends.base import (
     AudioBackend,
     AudioCapability,
@@ -29,3 +31,12 @@ from lib.backends.providers import PROVIDER_DASHSCOPE, PROVIDER_GEMINI, PROVIDER
 register_backend(PROVIDER_DASHSCOPE, DashScopeAudioBackend)
 register_backend(PROVIDER_MINIMAX, MiniMaxAudioBackend)
 register_backend(PROVIDER_GEMINI, GeminiAudioBackend)
+
+
+def _create_local_audio_backend(**kwargs: Any) -> AudioBackend:
+    from lib.local_runtime.local_audio import LocalAudioBackend
+
+    return LocalAudioBackend(**kwargs)
+
+
+register_backend("local-tts", _create_local_audio_backend)

@@ -33,4 +33,7 @@ MESSAGES: dict[str, str] = {
     "preset_notes_xiaomi_mimo": "Xiaomi MiMo only accepts known model names; no public model list.",
     "preset_notes_ark_coding_plan": "Volcengine Ark Coding Plan; no model-list endpoint — pick a suggested model you have enabled in the Ark console.",
     "preset_notes_ark_agent_plan": "Volcengine Ark Agent Plan; no model-list endpoint — pick a suggested model included in your plan tier.",
+    "provider_desc_local-hermes": "Local Hermes and oMLX for conversations, planning and structured text",
+    "provider_desc_l20": "Qwen-Image and FastH3 on your L20 through the protected controller",
+    "provider_desc_local-tts": "Free offline speech using local Qwen3-TTS",
 }

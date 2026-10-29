@@ -44,7 +44,13 @@ class ArcApiKeyVerifier(TokenVerifier):
         payload = await self._verify_api_key(token)
         if payload is None:
             return None
-        return AccessToken(token=token, client_id=payload["sub"], scopes=["arcreel"])
+        from server.local_runtime_access import project_scope_for_subject
+
+        scopes = ["arcreel"]
+        project = project_scope_for_subject(payload["sub"])
+        if project is not None:
+            scopes.append("project:" + project)
+        return AccessToken(token=token, client_id=payload["sub"], scopes=scopes)
 
 
 def build_remote_mcp_server(

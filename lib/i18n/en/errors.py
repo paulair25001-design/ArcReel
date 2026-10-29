@@ -848,4 +848,6 @@ MESSAGES = {
     "trash_restore_needs_character": "Its character “{name}” was deleted too, so it can only be restored with the character: restore the character from the project trash first, then this record",
     "trash_restore_download_only": "This deletion record can no longer be restored; its structure files can only be downloaded",
     "trash_restore_target_blocked": "Cannot restore to {path}: a folder on the path has been replaced with a link",
+    "local_only_external_inference_disabled": "Local Hermes, L20 image and video, and free local speech are selected. Alternate connection tests and trial runs are disabled.",
+    "local_video_end_frame_required": "L20 FastH3 requires a target end frame. Set the shot end frame before generating video.",
 }

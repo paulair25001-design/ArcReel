@@ -55,6 +55,8 @@ from lib.generation.video_request_facts import (
     VideoRequestFactsFailure,
     evaluate_video_request_facts,
 )
+from lib.i18n import _ as translate
+from lib.local_runtime.config import local_only_enabled
 from lib.prompts.prompt_utils import (
     is_structured_video_prompt,
     render_storyboard_video_prompt,
@@ -905,7 +907,7 @@ def build_storyboard_video_specs(
             continue
 
         try:
-            resolve_usable_storyboard_video_inputs(
+            _first_frame, end_frame = resolve_usable_storyboard_video_inputs(
                 project_path=project_dir,
                 project=project,
                 episode=episode,
@@ -913,6 +915,17 @@ def build_storyboard_video_specs(
                 item=item,
                 resolver=resolver,
             )
+            if local_only_enabled() and end_frame is None:
+                refused.append(
+                    refused_ticket(
+                        str(item_id),
+                        code=GenerationProblemCode.UNIT_INPUT_UNUSABLE,
+                        detail=translate("local_video_end_frame_required"),
+                        action=GenerationAction.FIX_INPUT,
+                        params={"required_input": "end_frame_image", "tool": "set_storyboard_end_frame"},
+                    )
+                )
+                continue
         except (OSError, ValueError) as exc:
             # 分镜图本身不可用是最常见的一种，给出下一步该跑什么，而不是只报路径。
             advice = "，请先运行 generate_storyboards" if isinstance(exc, StoryboardImageUnavailable) else ""

@@ -155,6 +155,21 @@ def remote_tool(
     caller: Callable[[], CallerContext] = authenticated_caller,
 ) -> FastMCPTool:
     async def invoke(arguments: dict[str, Any]) -> CallToolResult:
+        token = get_access_token()
+        scoped_projects = (
+            [scope.removeprefix("project:") for scope in token.scopes if scope.startswith("project:")] if token else []
+        )
+        if scoped_projects and (
+            isinstance(declaration, UnscopedToolDeclaration) or arguments.get("project") not in scoped_projects
+        ):
+            return remote_result(
+                declaration,
+                ToolOutcome(
+                    problem=ToolProblem(
+                        "project_scope_violation", "This Hermes session is restricted to its current project"
+                    )
+                ),
+            )
         if isinstance(declaration, UnscopedToolDeclaration):
             return remote_result(
                 declaration, await invoke_unscoped_declaration(declaration, arguments, caller(), services)
