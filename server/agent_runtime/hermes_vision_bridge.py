@@ -161,7 +161,7 @@ def _video_observations(payload: Any, images: list[tuple[dict[str, Any], dict[st
 class VisionTransport:
     """Retain actual MCP bytes until the next pinned local model request."""
 
-    def __init__(self, home: Path, *, base_url: str, model: str) -> None:
+    def __init__(self, home: Path, *, base_url: str, model: str, writer_tools: tuple[str, ...] = ()) -> None:
         self.home = home
         self.endpoint = urlsplit(base_url.rstrip("/") + "/chat/completions")
         if self.endpoint.scheme not in {"http", "https"} or self.endpoint.hostname not in {
@@ -171,6 +171,7 @@ class VisionTransport:
         }:
             raise ValueError("ArcReel vision transport requires a loopback endpoint")
         self.model = model
+        self.writer_tools = frozenset(writer_tools)
         self._capture: contextvars.ContextVar[list[tuple[dict[str, Any], dict[str, Any]]] | None] = (
             contextvars.ContextVar("arcreel_mcp_image_capture", default=None)
         )
@@ -271,6 +272,43 @@ class VisionTransport:
             self._session_id = session_id
             self._turn += 1
 
+    def _native_result(self, tool_name: str, arguments: Any, payload: Any) -> None:
+        """Record real native mutations and resource handoff, without grading media."""
+        if not isinstance(payload, dict) or "error" in payload or payload.get("is_error") is True:
+            return
+        content = payload.get("structuredContent")
+        if not isinstance(content, dict) or "problem" in content or not self._session_id:
+            return
+        project = arguments.get("project") if isinstance(arguments, dict) else None
+        if not isinstance(project, str) or not project:
+            return
+        if tool_name == "finish_local_session":
+            local = content.get("local_session")
+            restoration = local.get("restoration") if isinstance(local, dict) else None
+            if (
+                not isinstance(local, dict)
+                or local.get("project") != project
+                or not isinstance(restoration, dict)
+                or restoration.get("state") != "restored"
+                or restoration.get("original_service_restored") is not True
+            ):
+                return
+            event, source = "native_finalization", local
+        elif tool_name in self.writer_tools or tool_name.startswith("generate_"):
+            event, source = "native_write_success", content
+        else:
+            return
+        with self._mutex:
+            self._record(
+                event,
+                tool_name=tool_name,
+                project_name=project,
+                source_sha256=hashlib.sha256(
+                    json.dumps(source, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                ).hexdigest(),
+                **({"original_service_restored": True} if event == "native_finalization" else {}),
+            )
+
     def install_mcp(self, module: Any) -> None:
         """Preserve native MCP discovery, trust gates, timeouts and interrupts."""
         original_factory = module._make_tool_handler
@@ -315,9 +353,10 @@ class VisionTransport:
                     result = original(*args, **kwargs)
                 finally:
                     self._capture.reset(token)
+                payload = json.loads(result) if isinstance(result, str) else {}
+                self._native_result(tool_name, args[0] if args else kwargs, payload)
                 if not images:
                     # A successful declaration of attached images must never become text-only.
-                    payload = json.loads(result) if isinstance(result, str) else {}
                     rows = payload.get("structuredContent", {}).get("inspect_images", {}).get("images", [])
                     if tool_name == "inspect_images" and any(row.get("image") is not None for row in rows):
                         raise ValueError("ArcReel MCP image content was not captured")

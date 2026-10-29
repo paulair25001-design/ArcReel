@@ -454,6 +454,9 @@ class OptionsAssembler:
             home = config.hermes_home / "sessions" / uuid4().hex
         profile, autonomous = await asyncio.to_thread(_read_native_workflow, project_cwd)
         native_manifest = await asyncio.to_thread(profile.to_manifest, project_name)
+        from server.services.project.autonomous_stage import PRODUCTION_WRITER_TOOLS
+
+        native_manifest["production_writer_tools"] = sorted(PRODUCTION_WRITER_TOOLS)
         language = LOCALE_LANGUAGE_MAP.get(locale, "中文")
         prompt = (
             f"你是 ArcReel 的本地 Hermes 制作助手。用{language}与用户交流。\n"

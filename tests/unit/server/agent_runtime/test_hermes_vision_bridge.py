@@ -103,6 +103,66 @@ def _http_module(guard_calls: list[Any] | None = None) -> Any:
     return SimpleNamespace(Client=LocalClient, RequestNotRead=httpx.RequestNotRead)
 
 
+def _native_tool(transport: VisionTransport, payload: dict[str, Any], name: str):
+    module = SimpleNamespace(
+        _make_tool_handler=lambda *_: lambda _arguments: json.dumps(payload),
+        _cache_mcp_image_block=lambda block: None,
+        _run_on_mcp_loop=lambda value: value,
+    )
+    transport.install_mcp(module)
+    return module._make_tool_handler("arcreel", name, 30)
+
+
+def test_only_real_native_handoff_records_finalization_after_parent_and_child_writes(tmp_path: Path):
+    transport = VisionTransport(
+        tmp_path, base_url="http://127.0.0.1:8000/v1", model="qwen", writer_tools=("edit_timeline",)
+    )
+    transport.begin_turn("parent")
+    write = {"structuredContent": {"edit_timeline": {"revision": 3}}}
+    _native_tool(transport, write, "edit_timeline")({"project": "demo"})
+    with transport.agent_scope("child", parent_session_id="parent"):
+        _native_tool(transport, {"structuredContent": {"generation_batch": {"id": "native-batch"}}}, "generate_videos")(
+            {"project": "demo"}
+        )
+    local = {"project": "demo", "restoration": {"state": "restored", "original_service_restored": True}}
+    _native_tool(transport, {"structuredContent": {"local_session": local}}, "finish_local_session")(
+        {"project": "demo"}
+    )
+    events = [row for row in _receipt(tmp_path) if row["event"] in {"native_write_success", "native_finalization"}]
+    assert [(row["event"], row["session_id"]) for row in events] == [
+        ("native_write_success", "parent"),
+        ("native_write_success", "child"),
+        ("native_finalization", "parent"),
+    ]
+    assert events[1]["parent_session_id"] == "parent"
+    assert events[-1]["parent_session_id"] is None
+    assert events[-1]["original_service_restored"] is True
+    assert (
+        events[-1]["source_sha256"]
+        == hashlib.sha256(
+            json.dumps(local, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+
+
+@pytest.mark.parametrize("failure", ["business_error", "not_restored", "wrong_project", "read_tool"])
+def test_refusals_and_nonfinal_calls_cannot_acknowledge_native_delivery(tmp_path: Path, failure: str):
+    transport = VisionTransport(tmp_path, base_url="http://127.0.0.1:8000/v1", model="qwen")
+    transport.begin_turn("parent")
+    local = {"project": "demo", "restoration": {"state": "restored", "original_service_restored": True}}
+    payload: dict[str, Any] = {"structuredContent": {"local_session": local}}
+    if failure == "business_error":
+        payload["error"] = ""
+    elif failure == "not_restored":
+        local["restoration"]["original_service_restored"] = False
+    elif failure == "wrong_project":
+        local["project"] = "another"
+    _native_tool(transport, payload, "get_project_content" if failure == "read_tool" else "finish_local_session")(
+        {"project": "demo"}
+    )
+    assert not (tmp_path / "vision-wire-audit.jsonl").exists()
+
+
 def test_actual_mcp_pixels_reach_local_wire_and_audit_without_content_leak(
     tmp_path: Path, respx_mock: respx.MockRouter
 ):

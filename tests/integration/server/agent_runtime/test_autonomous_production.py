@@ -86,6 +86,7 @@ async def rig(db_factory):
         "active_tasks": [],
         "failed_tasks": [],
         "goal_complete_technical": False,
+        "native_delivery": {"enabled": True, "ready": True},
         "resource": {"owner_project": "project-one", "state": "restored", "original_service_restored": True},
     }
     finished = []
@@ -178,6 +179,32 @@ async def test_final_cut_and_resource_restoration_are_required_for_goal_completi
     await rig.service.advance(rig.goal)
     assert (await rig.store.get(rig.goal["id"], "default"))["state"] == "completed"
     assert len(rig.assistant.calls) == 1
+
+
+async def test_existing_cut_and_restored_resources_cannot_complete_a_waiting_native_goal(rig):
+    rig.facts["goal_complete_technical"] = True
+    rig.facts["native_delivery"]["ready"] = False
+    await rig.service.advance(rig.goal)
+    goal = await rig.store.get(rig.goal["id"], "default")
+    assert goal["state"] == "running"
+    assert len(rig.assistant.calls) == 1
+    rig.facts["native_delivery"]["ready"] = True
+    await rig.service.advance(goal)
+    assert (await rig.store.get(goal["id"], "default"))["state"] == "completed"
+
+
+async def test_repeated_resource_receipts_without_native_delivery_do_not_invent_progress(rig):
+    for sequence in range(4):
+        rig.facts["native_delivery"] = {
+            "enabled": True,
+            "ready": False,
+            "finalization": {"timestamp": sequence + 100, "source_sha256": str(sequence) * 64},
+        }
+        await rig.service.advance(rig.goal)
+    goal = await rig.store.get(rig.goal["id"], "default")
+    assert goal["state"] == "attention"
+    assert goal["last_error"] == "no_native_progress_after_three_turns"
+    assert len(rig.assistant.calls) == 3
 
 
 async def test_user_stop_drains_accepted_jobs_before_restoration_and_never_restarts(rig):

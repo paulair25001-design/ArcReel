@@ -19,6 +19,7 @@ class StartAutonomousProduction(BaseModel):
     episode_id: int = Field(ge=1)
     objective: str = Field(min_length=1, max_length=12000)
     client_key: str = Field(min_length=1, max_length=128)
+    resume_session_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,200}$")
 
     @field_validator("objective", "client_key")
     @classmethod
@@ -45,7 +46,14 @@ def _service():
 @router.post("/projects/{project_name}/autonomous-production")
 async def start_production(project_name: str, body: StartAutonomousProduction, user: CurrentUser):
     try:
-        goal = await _service().create(project_name, body.episode_id, body.objective.strip(), user.id, body.client_key)
+        goal = await _service().create(
+            project_name,
+            body.episode_id,
+            body.objective.strip(),
+            user.id,
+            body.client_key,
+            resume_session_id=body.resume_session_id,
+        )
     except FileNotFoundError as error:
         raise NotFoundError("project_not_found", name=project_name) from error
     except ValueError as error:

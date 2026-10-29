@@ -28,6 +28,7 @@ from lib.infra.data_root_layout import PROJECT_NAME_PATTERN
 ACTIVE_STATES = frozenset({"pending", "running", "waiting", "stopping"})
 TERMINAL_STATES = frozenset({"completed", "stopped", "attention"})
 _RUN_ID = re.compile(r"^[a-f0-9]{32}$")
+_SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,200}")
 _PAYLOAD_DEFAULTS: dict[str, Any] = {
     "pending_delivery": None,
     "last_progress_digest": None,
@@ -123,18 +124,31 @@ class AutonomyStore:
         return epoch, datetime.fromtimestamp(epoch, UTC)
 
     @staticmethod
-    def _same_objective(row: AutonomousProduction, episode_id: int, objective: str) -> dict[str, Any]:
+    def _same_objective(
+        row: AutonomousProduction, episode_id: int, objective: str, session_id: str | None = None
+    ) -> dict[str, Any]:
         if row.episode_id != episode_id or row.objective != objective:
             raise ValueError("The client key already belongs to a different objective")
+        if session_id is not None and row.session_id != session_id:
+            raise ValueError("The client key already belongs to a different session")
         return _record(row)
 
     async def create(
-        self, project_name: str, episode_id: int, objective: str, user_id: str, client_key: str
+        self,
+        project_name: str,
+        episode_id: int,
+        objective: str,
+        user_id: str,
+        client_key: str,
+        *,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         project_name = _project_name(project_name)
         _nonempty(user_id, "user_id")
         _nonempty(objective, "objective")
         _nonempty(client_key, "client_key")
+        if session_id is not None and _SESSION_ID.fullmatch(session_id) is None:
+            raise ValueError("Invalid Hermes session identity")
         if type(episode_id) is not int or episode_id < 1:
             raise ValueError("episode_id must be a positive integer")
         identity = and_(AutonomousProduction.user_id == user_id, AutonomousProduction.project_name == project_name)
@@ -142,7 +156,7 @@ class AutonomyStore:
         async with self._session_factory() as session:
             existing = (await session.execute(keyed)).scalar_one_or_none()
             if existing is not None:
-                return self._same_objective(existing, episode_id, objective)
+                return self._same_objective(existing, episode_id, objective, session_id)
             _, now = self._now()
             row = AutonomousProduction(
                 id=uuid.uuid4().hex,
@@ -151,7 +165,7 @@ class AutonomyStore:
                 objective=objective,
                 user_id=user_id,
                 client_key=client_key,
-                session_id=None,
+                session_id=session_id,
                 state="pending",
                 revision=0,
                 lease_owner=None,
@@ -167,7 +181,7 @@ class AutonomyStore:
                 await session.rollback()
                 existing = (await session.execute(keyed)).scalar_one_or_none()
                 if existing is not None:
-                    return self._same_objective(existing, episode_id, objective)
+                    return self._same_objective(existing, episode_id, objective, session_id)
                 active = (
                     await session.execute(
                         select(AutonomousProduction.id).where(identity, AutonomousProduction.state.in_(ACTIVE_STATES))
@@ -418,8 +432,16 @@ class AutonomyStore:
             return _record(row)
 
 
-async def create(project_name: str, episode_id: int, objective: str, user_id: str, client_key: str) -> dict[str, Any]:
-    return await AutonomyStore().create(project_name, episode_id, objective, user_id, client_key)
+async def create(
+    project_name: str,
+    episode_id: int,
+    objective: str,
+    user_id: str,
+    client_key: str,
+    *,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    return await AutonomyStore().create(project_name, episode_id, objective, user_id, client_key, session_id=session_id)
 
 
 async def get(run_id: str, user_id: str) -> dict[str, Any] | None:

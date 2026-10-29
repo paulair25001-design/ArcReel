@@ -275,8 +275,18 @@ def main() -> None:
         Path(os.environ["HERMES_HOME"]),
         base_url=os.environ["ARCREEL_HERMES_EXPECTED_BASE_URL"],
         model=os.environ["ARCREEL_HERMES_EXPECTED_MODEL"],
+        writer_tools=tuple(native_manifest.get("production_writer_tools", [])) if native_manifest else (),
     )
-    vision.install_mcp(importlib.import_module("tools.mcp_tool"))
+    error_spec = importlib.util.spec_from_file_location(
+        "arcreel_hermes_mcp_errors", Path(__file__).with_name("hermes_mcp_errors.py")
+    )
+    if error_spec is None or error_spec.loader is None:
+        raise RuntimeError("Native MCP error classification adapter is unavailable")
+    errors = importlib.util.module_from_spec(error_spec)
+    error_spec.loader.exec_module(errors)
+    mcp_module = importlib.import_module("tools.mcp_tool")
+    errors.install_mcp_business_errors(mcp_module)
+    vision.install_mcp(mcp_module)
     auxiliary = importlib.import_module("agent.auxiliary_client")
     vision.install_auxiliary(auxiliary)
     vision.install_compression(importlib.import_module("agent.context_compressor"), auxiliary)

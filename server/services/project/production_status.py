@@ -12,6 +12,7 @@ import json
 import math
 import wave
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -563,6 +564,7 @@ async def read_episode_production_status(
         "proof_digest": None,
     }
     result["native_review"] = {"enabled": False, "ready": True, "missing": []}
+    result["native_delivery"] = {"enabled": False, "ready": True}
     if local_only_enabled():
         from server.agent_runtime.autonomy_store import ACTIVE_STATES, AutonomyStore
 
@@ -582,9 +584,26 @@ async def read_episode_production_status(
                 result["native_review"] = await read_native_review_status(
                     project_name, episode_id, session_id, projects=projects, user_id=user_id
                 )
+                from server.services.project.native_delivery import read_native_delivery_status
+
+                try:
+                    created = datetime.fromisoformat(goal["created_at"])
+                    if created.tzinfo is None:
+                        raise ValueError("The native goal creation time must include its timezone")
+                except (KeyError, TypeError, ValueError):
+                    result["native_delivery"] = {
+                        "enabled": True,
+                        "ready": False,
+                        "problem": "goal_creation_time_unavailable",
+                    }
+                else:
+                    result["native_delivery"] = await read_native_delivery_status(
+                        project_name, session_id, user_id=user_id, not_before=created.timestamp()
+                    )
             else:
                 result["visual_observation"].update(enabled=True, ready=False, problem="goal_session_missing")
                 result["native_review"].update(enabled=True, ready=False, problem="goal_session_missing")
+                result["native_delivery"] = {"enabled": True, "ready": False, "problem": "goal_session_missing"}
             result["goal_complete_technical"] = (
                 result["goal_complete_technical"]
                 and result["visual_observation"]["ready"]

@@ -97,6 +97,7 @@ def compact_facts(facts: dict[str, Any]) -> dict[str, Any]:
                 for row in facts.get("native_review", {}).get("reviewed", [])
             ],
         },
+        "native_delivery": {key: facts.get("native_delivery", {}).get(key) for key in ("ready", "action", "problem")},
         "goal_complete_technical": bool(facts.get("goal_complete_technical")),
         "resource": {
             key: resource.get(key) for key in ("owner_project", "project", "state", "original_service_restored")
@@ -167,7 +168,8 @@ def continuation_message(goal: dict[str, Any], facts: dict[str, Any], mode: str)
         "保留原生修复后比较新旧与停止规则，不另建审核评分或无限重抽。完整旁白按实测容纳，等待全部写入任务终态后继续。"
         "调用生成或编辑工具得到在途任务后，结束本轮并说明等待；后台服务会在原生任务完成后继续同一会话，"
         "不要反复轮询模型或自行启动后台脚本。所有已有提交先对账，不重放旧工具调用。"
-        "最终目标是指定集的 current 成片，旁白项目需完整旁白和烧录字幕，随后 finish_local_session 恢复模型。"
+        "最终目标是指定集的 current 成片，旁白项目需完整旁白和烧录字幕，随后 finish_local_session 恢复模型并真实收尾。"
+        "旧成片存在和审片报告齐全不表示本目标已交付；以实际队列与版本为准，不把自己提过的批次名当作已受理任务。"
         "不要把一次 end_turn、视频片段齐备或创建时间线当成最终交付。没有实际听审或连续播放证据时不宣称已通过。"
         "看图以 inspect_images 经本地视觉通道实际送入的图片为据；历史 MEDIA 路径、文本占位或模型自述都不是视觉证据。"
         + (
@@ -234,12 +236,49 @@ class AutonomousProductionService:
         self._runner = None
         self._inflight.clear()
 
-    async def create(self, project: str, episode: int, objective: str, user_id: str, client_key: str) -> dict[str, Any]:
+    async def create(
+        self,
+        project: str,
+        episode: int,
+        objective: str,
+        user_id: str,
+        client_key: str,
+        *,
+        resume_session_id: str | None = None,
+    ) -> dict[str, Any]:
         if not local_only_enabled():
             raise ValueError("Autonomous production requires the explicit local-only runtime")
         # Project identity and episode existence are checked by the same native facts seam.
         await self.facts_reader(project, episode, user_id=user_id)
-        goal = await self.store.create(project, episode, objective, user_id, client_key)
+        if resume_session_id is not None:
+            from re import fullmatch
+
+            from lib.local_runtime.config import get_local_runtime_config
+            from server.agent_runtime.hermes_client import recorded_hermes_home
+
+            if fullmatch(r"[A-Za-z0-9_-]{1,200}", resume_session_id) is None:
+                raise ValueError("Invalid Hermes session identity")
+
+            def owned_binding() -> bool:
+                config = get_local_runtime_config()
+                home = recorded_hermes_home(config, resume_session_id, user_id)
+                if home is None or not home.is_dir() or home.is_symlink():
+                    return False
+                marker = home / ".arcreel-local-hermes"
+                return not marker.is_symlink() and marker.read_bytes() == b"arcreel-local-hermes/v1\n"
+
+            try:
+                owned = await asyncio.to_thread(owned_binding)
+            except (OSError, RuntimeError, ValueError):
+                raise ValueError("The Hermes session has no valid owned binding for this user") from None
+            if not owned:
+                raise ValueError("The Hermes session has no valid owned binding for this user")
+            # Read metadata after the binding I/O; a fork may have superseded
+            # the requested session while that thread was running.
+            meta = await self.assistant.get_session(resume_session_id)
+            if meta is None or meta.project_name != project or meta.superseded_by is not None:
+                raise ValueError("The Hermes session is missing, superseded, or belongs to another project")
+        goal = await self.store.create(project, episode, objective, user_id, client_key, session_id=resume_session_id)
         self.notify()
         return goal
 
@@ -355,7 +394,11 @@ class AutonomousProductionService:
             if stats.get("queued") or stats.get("running"):
                 await self._update(goal, state="waiting")
                 return
-            if facts.get("goal_complete_technical") and resource_closed(facts, goal["project_name"]):
+            if (
+                facts.get("goal_complete_technical")
+                and facts.get("native_delivery", {}).get("ready") is True
+                and resource_closed(facts, goal["project_name"])
+            ):
                 await self._update(goal, state="completed", last_error=None)
                 return
             digest = progress_digest(facts)
@@ -369,7 +412,7 @@ class AutonomousProductionService:
                 )
                 return
             pending = goal.get("pending_delivery") or {}
-            mode = "start" if not goal.get("dispatch_count") else "continue"
+            mode = "continue" if goal.get("dispatch_count") else ("reconcile" if goal.get("session_id") else "start")
             if pending and pending.get("phase") != "delivered":
                 session_id = goal.get("session_id")
                 entry = (
