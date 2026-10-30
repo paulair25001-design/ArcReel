@@ -10,6 +10,7 @@ import json
 import os
 import time
 import uuid
+from contextlib import nullcontext
 
 import httpx
 import portalocker
@@ -54,18 +55,20 @@ class L20ResourceSession:
             raise ValueError("L20 session receipt cannot be redirected")
         return json.loads(self.path.read_text()) if self.path.exists() else None
 
-    def _snapshot(self, record):
-        value = self.transport.rpc("snapshot")
-        if value["router"] != record["original"]["router"]:
-            raise RuntimeError("L20 original router changed; retain the restoration receipt")
-        return value
+    def _snapshot(self):
+        return self.transport.rpc("snapshot")
 
-    def _wait_models(self, record, expected, timeout=300):
+    def _wait_models(self, expected, timeout=300, *, allow_extra=False):
         deadline = self._clock() + timeout
         while self._clock() < deadline:
-            value = self._snapshot(record)
+            value = self._snapshot()
             models = value["models"]
-            if {x["id"] for x in models} == set(expected) and all(x["state"] == "loaded" for x in models):
+            selected = [x for x in models if x["id"] in expected]
+            if (
+                {x["id"] for x in selected} == set(expected)
+                and all(x["state"] == "loaded" for x in selected)
+                and (allow_extra or len(selected) == len(models))
+            ):
                 return value
             self._sleep(2)
         raise RuntimeError("L20 model state has not settled; restoration remains required")
@@ -82,7 +85,7 @@ class L20ResourceSession:
             response.raise_for_status()
             return response.json()
 
-    def begin(self, project: str):
+    def begin(self, project: str, *, fresh: bool = False):
         if not project:
             raise ValueError("ArcReel project ownership is required")
         with self._lock():
@@ -90,14 +93,27 @@ class L20ResourceSession:
             if record and not resource_handoff_complete(record):
                 if record["project"] != project:
                     raise RuntimeError("Another ArcReel project owns the L20 resource session")
-                if record["state"] != "active":
+                if fresh:
+                    self._stop_engine(record)
+                    record.update(
+                        state="closed",
+                        resource_released=True,
+                        original_service_restored=False,
+                        restore_original_models=False,
+                        close_reason="new_media_round",
+                    )
+                    self._save(record)
+                elif record["state"] != "active":
                     raise RuntimeError("The previous resource transition needs finalization before new media")
-                if self._snapshot(record)["models"]:
-                    raise RuntimeError("Original models were reloaded during media production; pause for inspection")
-                self._ready(record)
-                return record
+                else:
+                    # An accepted job resumes its exact owned engine and handle;
+                    # changes to the separate llama router do not invalidate it.
+                    self._ready(record)
+                    return record
             self.transport.connect()
             original = self.transport.rpc("snapshot")
+            if self.config.standby_model and self.config.standby_model not in original["catalog"]:
+                raise RuntimeError("Configured L20 standby model is not available on the current router")
             self.transport.rpc("slots", {"models": original["models"]})
             self._sleep(2)
             current = self.transport.rpc("snapshot")
@@ -111,6 +127,7 @@ class L20ResourceSession:
                 "project": project,
                 "state": "releasing",
                 "restore_original_models": self.config.restore_original_models,
+                "standby_model": self.config.standby_model,
                 "original": original,
                 "remote_root": "/nvme1/.media-workspace/work/arcreel/" + session,
                 "unload_requests": [],
@@ -122,8 +139,10 @@ class L20ResourceSession:
                 for model in original["models"]:
                     record["unload_requests"].append(model["id"])
                     self._save(record)
-                    self.transport.rpc("unload", {"model": model["id"], "router": original["router"]}, timeout=270)
-                record["released"] = self._wait_models(record, [], timeout=120)
+                    self.transport.rpc(
+                        "unload", {"model": model["id"], "router": self._snapshot()["router"]}, timeout=270
+                    )
+                record["released"] = self._wait_models([], timeout=120)
                 record["startup_requested"] = True
                 self._save(record)
                 record["comfy"] = self.transport.rpc(
@@ -167,10 +186,7 @@ class L20ResourceSession:
                     self._save(record)
                 raise
 
-    def _restore(self, record, *, before_submission=False):
-        record["restore_original_models"] = self.config.restore_original_models
-        record["state"] = "restoring" if self.config.restore_original_models else "closing"
-        self._save(record)
+    def _stop_engine(self, record, *, before_submission=False):
         if (record.get("startup_requested") or record.get("comfy")) and not record.get("engine_stop", {}).get(
             "stopped"
         ):
@@ -185,40 +201,56 @@ class L20ResourceSession:
                     response.raise_for_status()
             record["engine_stop"] = self.transport.rpc("stop_comfy", {"root": record["remote_root"]})
             self._save(record)
+
+    def _restore(self, record, *, before_submission=False):
+        record["restore_original_models"] = self.config.restore_original_models
+        record["state"] = "restoring" if self.config.restore_original_models else "closing"
+        self._save(record)
+        self._stop_engine(record, before_submission=before_submission)
         if not self.config.restore_original_models:
             record.update(state="closed", original_service_restored=False, resource_released=True)
             self._save(record)
             self.transport.close()
             return record
-        current = self._snapshot(record)
-        original_ids = {x["id"] for x in record["original"]["models"]}
-        if {x["id"] for x in current["models"]} - original_ids:
-            raise RuntimeError("Unexpected model loaded; retain the original restoration receipt")
-        loaded_ids = {x["id"] for x in current["models"]}
-        for model in record["original"]["models"]:
-            if model["id"] in loaded_ids:
+        current = self._snapshot()
+        available = set(current["catalog"])
+        original_ids = [x["id"] for x in record["original"]["models"]]
+        record["retired_model_ids"] = [name for name in original_ids if name not in available]
+        targets = list(dict.fromkeys(name for name in original_ids if name in available))
+        if self.config.standby_model:
+            if self.config.standby_model not in available:
+                raise RuntimeError("Configured L20 standby model is not available on the current router")
+            if self.config.standby_model not in targets:
+                targets.append(self.config.standby_model)
+        record["restoration_targets"] = targets
+        self._save(record)
+        for name in targets:
+            current = self._snapshot()
+            if name in {x["id"] for x in current["models"]}:
                 continue
             # A lost load response is reconciled from router state on the next
             # finish call. It is never followed immediately by a duplicate POST.
-            record["load_requests"].append(model["id"])
+            record["load_requests"].append(name)
             self._save(record)
-            self.transport.rpc("load", {"model": model["id"], "router": record["original"]["router"]}, timeout=270)
-        record["restored"] = self._wait_models(record, original_ids)
+            self.transport.rpc("load", {"model": name, "router": current["router"]}, timeout=270)
+        record["restored"] = self._wait_models(targets, allow_extra=True)
         if record["restored"]["health"].get("status") != "ok":
             raise RuntimeError("Original L20 router health is unconfirmed")
-        record["restored_idle_1"] = self.transport.rpc("slots", {"models": record["restored"]["models"]})
-        self._sleep(2)
-        fresh = self._wait_models(record, original_ids, timeout=30)
-        record["restored_idle_2"] = self.transport.rpc("slots", {"models": fresh["models"]})
+        record["restored_ready"] = self.transport.rpc(
+            "slots", {"models": [x for x in record["restored"]["models"] if x["id"] in targets], "require_idle": False}
+        )
         record.update(state="restored", original_service_restored=True)
         self._save(record)
         self.transport.close()
         return record
 
-    def finish(self, project: str | None = None):
+    def finish(self, project: str | None = None, *, gpu_lock_held: bool = False):
         # Same order as generation: gpu lock then resource transition lock.
         self.config.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with portalocker.Lock(str(self.config.state_dir / "gpu.lock"), timeout=600), self._lock():
+        gpu_lock = (
+            nullcontext() if gpu_lock_held else portalocker.Lock(str(self.config.state_dir / "gpu.lock"), timeout=600)
+        )
+        with gpu_lock, self._lock():
             record = self._read()
             if not record:
                 if self.config.restore_original_models:
@@ -230,7 +262,9 @@ class L20ResourceSession:
                     "resource_released": True,
                     "active": False,
                 }
-            if resource_handoff_complete(record):
+            if resource_handoff_complete(record) and not (
+                self.config.restore_original_models and self.config.standby_model
+            ):
                 return {**record, "active": False}
             if project is not None and record["project"] != project:
                 raise RuntimeError("Only the owning ArcReel project can finish this resource session")

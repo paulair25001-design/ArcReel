@@ -60,13 +60,13 @@ FastH3 的原生对齐帧数可能超过声明时长，适配器保留原片，�
 
 ## 资源与会话
 
-图像和视频共享本项目的 L20 资源会话与跨进程锁。ArcReel 保存原 llama router 的模型 loaded 集合和身份，核实所有 child slots 连续两轮空闲后，通过 router 的 `/models/unload` 释放模型；router 进程保持运行。制作期间不会在每个镜头之间反复恢复原模型。模型权重、已安装 ComfyUI 和纯推理节点属于运行依赖；项目队列、审核与剪辑仍由 ArcReel 管理。
+图像和视频共享本项目的 L20 GPU 锁。每个未提交的生成任务按当时的 router 和模型状态开工：先停止本项目遗留且已空闲的媒体服务，读取当前模型集合，卸载 llama 模型，再启动图片或视频推理服务。任务结束并取得产物后，执行器释放媒体模型、关闭本项目拥有的服务并恢复原模型。新任务不拿上一轮保存的 router PID 或启动时间作准入条件；恢复也通过当前 router 执行。模型权重、已安装 ComfyUI 和纯推理节点属于运行依赖，项目队列、审核与剪辑仍由 ArcReel 管理。
 
-当整个项目的媒体任务完成，或停止制作且任务队列已空时，让 Hermes 调用 `finish_local_session`。应用等待自己的 ComfyUI 队列清空并释放推理模型。`ARCREEL_L20_RESTORE_ORIGINAL_MODELS=false` 时，只关闭本项目拥有的媒体服务，不自动加载原 llama 模型；完成、手动停止、异常回退和应用退出均使用该设置。收尾记录为 `state=closed`、`resource_released=true`、`original_service_restored=false`，原生自动目标按这些实际收尾事实结算，不把未恢复模型当成失败，也不假报模型已经恢复。
+本机设置 `ARCREEL_L20_RESTORE_ORIGINAL_MODELS=true`、`ARCREEL_L20_STANDBY_MODEL=qwen3.6-27b-mtp`。即使 27B 在本轮开工前已被卸载，收尾仍恢复这个明确配置的待机模型；仅恢复当前模型目录仍提供的原模型，不把已移除或改名的旧模型别名带入新 router。恢复核验模型已加载、router 健康及 GPU 驻留，不要求刚恢复的服务停止响应其他用户。该设置不拦截其他用户请求，也不增加占用检测、自动暂停或空闲等待。
 
-该设置不拦截其他用户的请求，也不增加占用检测、自动暂停或等待。router 保持运行，其他请求仍可能加载模型。显式设置为 `true` 时才恢复原先的 loaded 集合并核对健康状态与空闲 slots；未设置时保留这一兼容行为。恢复或关闭失败时保留持久记录与收尾责任，不报告完成。
+已提交而结果未明的任务保留原 handle、请求图和服务，按原生队列与历史对账，不能重新发送。确定的生成失败也收尾恢复；产物已成功下载后，单独的模型恢复失败不会把有效图片或视频改成生成失败，恢复责任和错误保留在资源记录中。未提交的失败任务可重新准入，不沿用失效的上一轮进程身份。
 
-点击停止或删除对话会话时，应用也会等待该项目的排队和运行任务结束，再结束本项目资源会话；停止对话不等于取消已提交的媒体作业。继续制作会撤销尚未执行的恢复请求；同项目另有工作中的对话时，也会保留制作会话。应用正常退出及异常关闭的收尾路径都会先等待工作任务，再结束本应用拥有的资源会话。
+整集交付或用户停止制作时，Hermes 调用 `finish_local_session` 核对最终收尾；它仍须晚于原生审片与生产写入。停止、删除会话或应用退出时先等待已接受的媒体作业落账，再清理本项目资源并按当前设置恢复待机模型。若显式改成 `ARCREEL_L20_RESTORE_ORIGINAL_MODELS=false`，则关闭媒体服务后保持原模型卸载，记录 `state=closed`、`resource_released=true`、`original_service_restored=false`；未完成的恢复不假报成功。
 
 每个媒体任务在提交前冻结实际推理图、输入 SHA-256 和 provider handle，然后只提交一次 `/prompt`。已取得 `prompt_id` 的任务直接查询 `/history` 并通过 `/view` 下载。提交响应丢失时，只从队列和历史记录中按同一 handle、图内容与图哈希精确定位；无匹配或有多笔匹配均保留故障，不盲目重投。完成历史中的 graph 必须与冻结请求完全一致。
 
@@ -120,7 +120,8 @@ ARCREEL_L20_SSH_TARGET=my-l20
 ARCREEL_L20_SSH_OPTIONS_JSON='["-o","BatchMode=yes","-o","StrictHostKeyChecking=yes"]'
 ARCREEL_L20_COMFY_URL=http://127.0.0.1:18191
 ARCREEL_L20_ROUTER_URL=http://127.0.0.1:18080
-ARCREEL_L20_RESTORE_ORIGINAL_MODELS=false
+ARCREEL_L20_RESTORE_ORIGINAL_MODELS=true
+ARCREEL_L20_STANDBY_MODEL=qwen3.6-27b-mtp
 # ARCREEL_L20_DIRECT_STATE_DIR=/path/to/arcreel-data/runtime/l20-direct
 # ARCREEL_L20_COMFY_PYTHON=/path/to/installed/comfyui/python
 # ARCREEL_L20_COMFY_ENGINE=/path/to/installed/ComfyUI

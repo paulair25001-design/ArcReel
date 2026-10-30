@@ -77,20 +77,31 @@ def snapshot():
     gpu = subprocess.check_output(
         ["/usr/bin/nvidia-smi", "--query-gpu=memory.free,memory.used", "--format=csv,noheader,nounits"], text=True
     ).strip()
-    return {"router": router_identity(), "models": loaded, "health": request("/health"), "gpu_mib": gpu}
+    return {
+        "router": router_identity(),
+        "models": loaded,
+        "catalog": [item["id"] for item in body["data"]],
+        "health": request("/health"),
+        "gpu_mib": gpu,
+    }
 
 
-def slots(models):
+def slots(models, *, require_idle=True):
     gpu = subprocess.check_output(
         ["/usr/bin/nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"], text=True
     )
     gpu_pids = {int(line.split(",")[0]): int(line.split(",")[1]) for line in gpu.splitlines() if line.strip()}
     receipts = []
+    idle = True
     for item in models:
         if item["state"] != "loaded" or not item["port"]:
             raise RuntimeError("Original model is not stably loaded")
         value = request("/slots", port=item["port"])
-        if not isinstance(value, list) or not value or any(x.get("is_processing") is not False for x in value):
+        if not isinstance(value, list) or not value:
+            raise RuntimeError("Original model has no observable slots")
+        model_idle = all(x.get("is_processing") is False for x in value)
+        idle = idle and model_idle
+        if require_idle and not model_idle:
             raise RuntimeError("Original model has an active or unknown slot")
         children = []
         for path in Path("/proc").iterdir():
@@ -114,10 +125,10 @@ def slots(models):
                 "model": item["id"],
                 "process": identity(children[0]),
                 "gpu_mib": gpu_pids[children[0]],
-                "idle_slots": len(value),
+                "idle_slots": sum(x.get("is_processing") is False for x in value),
             }
         )
-    return {"idle": True, "children": receipts}
+    return {"idle": idle, "ready": True, "children": receipts}
 
 
 def runtime_root(value):
@@ -238,7 +249,7 @@ def main():
     if operation == "snapshot":
         result = snapshot()
     elif operation == "slots":
-        result = slots(data["models"])
+        result = slots(data["models"], require_idle=data.get("require_idle", True))
     elif operation in {"load", "unload"}:
         if router_identity() != data["router"]:
             raise RuntimeError("Original router identity changed")

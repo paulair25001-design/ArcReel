@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -23,6 +24,7 @@ from PIL import Image, ImageOps
 
 from lib.backends.http_status_errors import ArtifactDownloadError
 from lib.infra.json_io import atomic_write_bytes, atomic_write_json
+from lib.infra.logging_utils import redact_diagnostic_text
 from lib.local_runtime.l20_capabilities import IMAGE_REFERENCE_LIMIT
 from lib.local_runtime.l20_direct_config import L20DirectConfig
 from lib.local_runtime.l20_direct_graphs import (
@@ -32,15 +34,17 @@ from lib.local_runtime.l20_direct_graphs import (
     workflow_sha256,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class L20DirectError(RuntimeError):
     """The exact ArcReel job requires inspection; never silently retry a POST."""
 
 
 class ResourceSession(Protocol):
-    def begin(self, project: str) -> Any: ...
+    def begin(self, project: str, *, fresh: bool = False) -> Any: ...
 
-    def finish(self, project: str) -> Any: ...
+    def finish(self, project: str, *, gpu_lock_held: bool = False) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -241,68 +245,95 @@ class L20DirectGateway:
                 return self._artifact(record)
             if record["comfy_url"] != self.config.comfy_url:
                 raise L20DirectError("Resume must use the original ComfyUI endpoint")
-            self.resource_session.begin(record["intent"]["project"])
-            with self._client_factory(
-                base_url=record["comfy_url"], timeout=60, follow_redirects=False, trust_env=False
-            ) as http:
-                if record["state"] == "prepared":
-                    queue = self._json(http, "GET", "/queue")
-                    if (
-                        not isinstance(queue.get("queue_running"), list)
-                        or not isinstance(queue.get("queue_pending"), list)
-                        or queue["queue_running"]
-                        or queue["queue_pending"]
-                    ):
-                        raise L20DirectError("The ComfyUI queue is not empty; retain this prepared ArcReel task")
-                    names = self._upload(http, record)
-                    intent = record["intent"]
-                    prompt, width, height, seed = (
-                        intent["prompt"],
-                        intent["canvas"][0],
-                        intent["canvas"][1],
-                        intent["seed"],
-                    )
-                    prefix = "arcreel/" + handle
-                    compiled = (
-                        build_video_graph(prompt, width, height, seed, names, intent["requested_frames"], prefix)
-                        if intent["media_type"] == "video"
-                        else build_image_graph(prompt, width, height, seed, names, prefix)
-                    )
-                    self._validate_nodes(http, compiled.workflow)
-                    record.update(
-                        workflow=compiled.workflow,
-                        workflow_sha256=compiled.sha256,
-                        output_node=compiled.output_node,
-                        native_frames=compiled.native_frames,
-                        state="submission_started",
-                    )
-                    self._save(record)
-                    # Exactly one POST. Persist intent first: timeout or process
-                    # death is reconciled through queue/history, never replayed.
-                    value = self._json(
-                        http,
-                        "POST",
-                        "/prompt",
-                        json={
-                            "prompt": compiled.workflow,
-                            "client_id": handle,
-                            "extra_data": {"arcreel": {"handle": handle, "workflow_sha256": compiled.sha256}},
-                        },
-                    )
-                    if (
-                        value.get("node_errors")
-                        or not isinstance(value.get("prompt_id"), str)
-                        or not value["prompt_id"]
-                    ):
-                        record.update(state="attention", submission_response=value)
+            self.resource_session.begin(record["intent"]["project"], fresh=record["state"] == "prepared")
+            try:
+                with self._client_factory(
+                    base_url=record["comfy_url"], timeout=60, follow_redirects=False, trust_env=False
+                ) as http:
+                    if record["state"] == "prepared":
+                        queue = self._json(http, "GET", "/queue")
+                        if (
+                            not isinstance(queue.get("queue_running"), list)
+                            or not isinstance(queue.get("queue_pending"), list)
+                            or queue["queue_running"]
+                            or queue["queue_pending"]
+                        ):
+                            raise L20DirectError("The ComfyUI queue is not empty; retain this prepared ArcReel task")
+                        names = self._upload(http, record)
+                        intent = record["intent"]
+                        prompt, width, height, seed = (
+                            intent["prompt"],
+                            intent["canvas"][0],
+                            intent["canvas"][1],
+                            intent["seed"],
+                        )
+                        prefix = "arcreel/" + handle
+                        compiled = (
+                            build_video_graph(prompt, width, height, seed, names, intent["requested_frames"], prefix)
+                            if intent["media_type"] == "video"
+                            else build_image_graph(prompt, width, height, seed, names, prefix)
+                        )
+                        self._validate_nodes(http, compiled.workflow)
+                        record.update(
+                            workflow=compiled.workflow,
+                            workflow_sha256=compiled.sha256,
+                            output_node=compiled.output_node,
+                            native_frames=compiled.native_frames,
+                            state="submission_started",
+                        )
                         self._save(record)
-                        raise L20DirectError("ComfyUI did not accept the exact graph")
-                    record.update(prompt_id=value["prompt_id"], state="submitted")
-                    self._save(record)
-                elif record["state"] in {"submission_started", "attention"}:
-                    record.update(prompt_id=self._reconcile(http, record), state="submitted")
-                    self._save(record)
-                return self._wait(http, record)
+                        # Exactly one POST. Persist intent first: timeout or process
+                        # death is reconciled through queue/history, never replayed.
+                        value = self._json(
+                            http,
+                            "POST",
+                            "/prompt",
+                            json={
+                                "prompt": compiled.workflow,
+                                "client_id": handle,
+                                "extra_data": {"arcreel": {"handle": handle, "workflow_sha256": compiled.sha256}},
+                            },
+                        )
+                        if (
+                            value.get("node_errors")
+                            or not isinstance(value.get("prompt_id"), str)
+                            or not value["prompt_id"]
+                        ):
+                            record.update(state="attention", submission_response=value)
+                            self._save(record)
+                            raise L20DirectError("ComfyUI did not accept the exact graph")
+                        record.update(prompt_id=value["prompt_id"], state="submitted")
+                        self._save(record)
+                    elif record["state"] in {"submission_started", "attention"}:
+                        record.update(prompt_id=self._reconcile(http, record), state="submitted")
+                        self._save(record)
+                    return self._wait(http, record)
+            finally:
+                history = record.get("history", {})
+                if (
+                    record["state"] in {"prepared", "completed"}
+                    or history.get("status", {}).get("status_str") == "error"
+                ):
+                    self._finish_round(record)
+
+    def _finish_round(self, record: dict[str, Any]) -> None:
+        """Finish a settled media job inside its already-held GPU transaction.
+
+        Uncertain submissions and downloads keep the exact owned engine alive.
+        A cleanup failure retains the valid generated artifact and the separate
+        resource recovery responsibility; it cannot turn that image into a retry.
+        """
+        try:
+            result = self.resource_session.finish(record["intent"]["project"], gpu_lock_held=True)
+            record["resource_finalization"] = {
+                key: result.get(key)
+                for key in ("state", "original_service_restored", "restore_original_models", "restoration_targets")
+            }
+        except Exception as error:
+            detail = redact_diagnostic_text(error)
+            record["resource_finalization"] = {"state": "pending", "error": detail}
+            logger.warning("L20 media finished; resource finalization remains pending: %s", detail)
+        self._save(record)
 
     def _wait(self, http: Any, record: dict[str, Any]) -> DirectArtifact:
         deadline = self._clock() + self.config.timeout_seconds

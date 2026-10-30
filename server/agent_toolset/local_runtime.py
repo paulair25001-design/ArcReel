@@ -70,7 +70,7 @@ LOCAL_RUNTIME_TOOLS = (
     ),
     ToolDeclaration(
         name="finish_local_session",
-        description="本项目图片和视频全部完成，或用户停止制作后，精确结束本项目拥有的 L20 会话；是否恢复原模型按本地设置执行。有排队或运行中的生成任务时拒绝；不能在每个镜头之间调用。",
+        description="单个图片或视频生成结束后，执行器已自动释放媒体模型并恢复配置的 L20 待机模型。本工具在整集交付或用户停止制作后核对最终资源收尾；有排队或运行中的任务时拒绝，不要在每个镜头之间手动调用。",
         request_model=FinishLocalSessionRequest,
         migration=BLOCKED,
         domain_key="local_session",

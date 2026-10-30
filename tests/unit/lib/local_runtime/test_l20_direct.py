@@ -56,12 +56,17 @@ def png(size=(64, 64)):
 class Resources:
     def __init__(self):
         self.begun, self.finished = [], []
+        self.fresh = []
+        self.finish_error = None
 
-    def begin(self, project):
+    def begin(self, project, *, fresh=False):
         self.begun.append(project)
+        self.fresh.append(fresh)
 
-    def finish(self, project):
+    def finish(self, project, *, gpu_lock_held=False):
         self.finished.append(project)
+        if self.finish_error:
+            raise self.finish_error
         return {"state": "RESTORED"}
 
 
@@ -197,21 +202,40 @@ def test_native_image_http_lifecycle_retains_completed_artifact_without_resubmis
     assert server.calls.count(("POST", "/prompt")) == 1
     assert server.calls.count(("POST", "/free")) == 1
     assert resources.begun == ["demo"]
-    assert resources.finished == []
-    assert client.finalize(project="demo")["state"] == "RESTORED"
     assert resources.finished == ["demo"]
+    assert client.finalize(project="demo")["state"] == "RESTORED"
+    assert resources.finished == ["demo", "demo"]
 
 
 def test_lost_submit_response_reconciles_exact_frozen_graph_and_identity_without_repost(tmp_path):
-    client, server, _ = gateway(tmp_path)
+    client, server, resources = gateway(tmp_path)
     handle = client.prepare(intent(), task_identity="one")
     server.lose_submit_response = True
     with pytest.raises(httpx.ReadTimeout):
         client.run(handle)
+    assert resources.finished == []
     artifact = client.run(handle)
     assert artifact.path.read_bytes() == png()
     assert artifact.record["prompt_id"] == "prompt-one"
     assert server.calls.count(("POST", "/prompt")) == 1
+    assert resources.fresh == [True, False]
+    assert resources.finished == ["demo"]
+
+
+def test_valid_generated_image_is_retained_when_only_model_restoration_fails(tmp_path):
+    client, server, resources = gateway(tmp_path)
+    handle = client.prepare(intent(), task_identity="cleanup-failure")
+    resources.finish_error = RuntimeError("standby model unavailable")
+
+    artifact = client.run(handle)
+
+    assert artifact.path.read_bytes() == png()
+    assert artifact.record["state"] == "completed"
+    assert artifact.record["resource_finalization"]["state"] == "pending"
+    assert client.run(handle).path == artifact.path
+    assert server.calls.count(("POST", "/prompt")) == 1
+    resources.finish_error = None
+    assert client.finalize(project="demo")["state"] == "RESTORED"
 
 
 def test_ambiguous_remote_identity_fails_closed_without_duplicate_post(tmp_path):
@@ -490,7 +514,7 @@ async def test_video_backend_persists_queue_identity_and_checks_real_decoding_an
     assert len(persisted) == 1
     assert persisted[0]["job_id"].startswith("arcreel-l20-")
     assert server.calls.count(("POST", "/prompt")) == 1
-    assert resources.finished == []
+    assert resources.finished == ["demo"]
 
 
 def test_previously_submitted_factory_handles_are_not_reinterpreted_by_the_new_provider(tmp_path):

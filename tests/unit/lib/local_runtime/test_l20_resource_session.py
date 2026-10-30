@@ -4,6 +4,7 @@ import copy
 import json
 from dataclasses import replace
 
+import portalocker
 import pytest
 import respx
 
@@ -26,6 +27,8 @@ class RouterTransport:
         self.unload_failure = None
         self.lose_start_response = False
         self.busy_slots = False
+        self.probe_failure = False
+        self.catalog = {"alpha", "beta"}
 
     def connect(self):
         self.calls.append(("connect", {}))
@@ -40,14 +43,17 @@ class RouterTransport:
             return {
                 "router": copy.deepcopy(self.router),
                 "models": copy.deepcopy(list(self.models.values())),
+                "catalog": sorted(self.catalog),
                 "health": {"status": "ok"},
                 "gpu_mib": "45000, 1000",
             }
         if operation == "slots":
-            if self.busy_slots:
+            if self.probe_failure:
+                raise RuntimeError("Original model residency is unconfirmed")
+            if self.busy_slots and payload.get("require_idle", True):
                 raise RuntimeError("Original model has an active or unknown slot")
             assert all(item["state"] == "loaded" for item in payload["models"])
-            return {"idle": True}
+            return {"ready": True, "idle": not self.busy_slots}
         if operation == "unload":
             # The actual loaded set and restore responsibility must exist on
             # disk before any resource-changing request reaches this boundary.
@@ -116,16 +122,17 @@ def test_foreign_project_cannot_take_or_finish_the_owned_session(resources):
     assert record(session)["project"] == "original"
 
 
-def test_router_identity_change_blocks_restore_loads_and_retains_the_capture(resources):
+def test_router_restart_uses_the_current_router_for_restoration_and_retains_the_capture(resources):
     session, transport, _ = resources
     session.begin("demo")
     original = copy.deepcopy(record(session)["original"])
     transport.router["birth"] = "different-router"
-    with pytest.raises(RuntimeError, match="original router changed"):
-        session.finish("demo")
-    assert not any(operation == "load" for operation, _ in transport.calls)
+    finished = session.finish("demo")
+    assert finished["state"] == "restored"
+    assert set(transport.models) == {"alpha", "beta"}
+    assert all(payload["router"] == transport.router for operation, payload in transport.calls if operation == "load")
     assert record(session)["original"] == original
-    assert record(session)["state"] != "restored"
+    assert record(session)["state"] == "restored"
 
 
 def test_lost_start_response_stops_only_the_known_owned_engine_before_restoring(resources):
@@ -174,13 +181,13 @@ def test_normal_finish_restores_original_names_without_restarting_the_router(res
 def test_retry_finish_skips_an_already_stopped_engine_and_rechecks_original_models(resources):
     session, transport, mock = resources
     session.begin("demo")
-    transport.busy_slots = True
-    with pytest.raises(RuntimeError, match="active or unknown slot"):
+    transport.probe_failure = True
+    with pytest.raises(RuntimeError, match="residency is unconfirmed"):
         session.finish("demo")
     assert record(session)["engine_stop"]["stopped"] is True
     assert record(session)["state"] == "restoring"
     mock.get(session.config.comfy_url + "/queue").respond(503)
-    transport.busy_slots = False
+    transport.probe_failure = False
 
     finished = session.finish("demo")
 
@@ -239,3 +246,74 @@ def test_failed_admission_honors_disabled_restore_without_reloading_released_mod
     assert record(session)["state"] == "closed"
     assert record(session)["original_service_restored"] is False
     assert not any(operation == "load" for operation, _ in transport.calls)
+
+
+def test_fresh_media_round_retires_the_owned_idle_engine_and_captures_the_live_router(resources):
+    session, transport, _ = resources
+    live_models = copy.deepcopy(transport.models)
+    old = session.begin("demo")
+    transport.router["birth"] = "new-router"
+    transport.models = live_models
+
+    current = session.begin("demo", fresh=True)
+
+    assert current["session"] != old["session"]
+    assert current["original"]["router"] == transport.router
+    assert current["state"] == "active"
+    retired = json.loads((session.config.state_dir / "sessions" / (old["session"] + ".json")).read_bytes())
+    assert retired["close_reason"] == "new_media_round"
+    assert retired["engine_stop"]["stopped"] is True
+
+
+def test_fresh_round_does_not_stop_an_engine_with_an_unfinished_submission(resources):
+    session, transport, mock = resources
+    old = session.begin("demo")
+    mock.get(session.config.comfy_url + "/queue").respond(
+        200, json={"queue_running": [[1, "accepted-job"]], "queue_pending": []}
+    )
+
+    with pytest.raises(RuntimeError, match="still has media work"):
+        session.begin("demo", fresh=True)
+
+    assert record(session)["session"] == old["session"]
+    assert transport.owned_engine is True
+    assert not any(operation == "stop_comfy" for operation, _ in transport.calls)
+
+
+def test_configured_standby_is_restored_even_when_it_was_already_unloaded_at_admission(resources):
+    session, transport, _ = resources
+    session.config = replace(session.config, standby_model="alpha")
+    transport.models.clear()
+    session.begin("demo")
+
+    finished = session.finish("demo")
+
+    assert finished["state"] == "restored"
+    assert finished["restoration_targets"] == ["alpha"]
+    assert set(transport.models) == {"alpha"}
+
+
+def test_restoration_accepts_the_live_router_and_preserves_other_models_and_active_users(resources):
+    session, transport, _ = resources
+    session.config = replace(session.config, standby_model="alpha")
+    session.begin("demo")
+    transport.router["birth"] = "new-router"
+    transport.catalog = {"alpha", "gamma"}
+    transport.models["gamma"] = {"id": "gamma", "state": "loaded", "port": 7100}
+    transport.busy_slots = True
+
+    finished = session.finish("demo")
+
+    assert finished["state"] == "restored"
+    assert finished["retired_model_ids"] == ["beta"]
+    assert set(transport.models) == {"alpha", "gamma"}
+    assert finished["restored_ready"]["idle"] is False
+
+
+def test_generation_can_finish_while_its_gpu_transaction_is_still_owned(resources):
+    session, transport, _ = resources
+    session.begin("demo")
+    with portalocker.Lock(str(session.config.state_dir / "gpu.lock"), timeout=1):
+        finished = session.finish("demo", gpu_lock_held=True)
+    assert finished["state"] == "restored"
+    assert transport.owned_engine is False

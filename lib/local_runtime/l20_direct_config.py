@@ -19,6 +19,7 @@ class L20DirectConfig:
     poll_interval: float = 2
     timeout_seconds: float = 9600
     restore_original_models: bool = True
+    standby_model: str | None = None
 
     def __post_init__(self) -> None:
         for value in (self.comfy_url, self.router_url):
@@ -42,6 +43,8 @@ class L20DirectConfig:
             raise ValueError("L20 polling and timeout must be positive and finite")
         if type(self.restore_original_models) is not bool:
             raise ValueError("L20 model restoration must be a boolean")
+        if self.standby_model is not None and not self.standby_model.strip():
+            raise ValueError("L20 standby model must be a nonempty model ID")
 
 
 def get_l20_direct_config() -> L20DirectConfig:
@@ -57,4 +60,5 @@ def get_l20_direct_config() -> L20DirectConfig:
         poll_interval=float(os.environ.get("ARCREEL_L20_POLL_INTERVAL", "2")),
         timeout_seconds=float(os.environ.get("ARCREEL_L20_TIMEOUT_SECONDS", "9600")),
         restore_original_models=restore in {"true", "1", "yes"},
+        standby_model=os.environ.get("ARCREEL_L20_STANDBY_MODEL", "").strip() or None,
     )
