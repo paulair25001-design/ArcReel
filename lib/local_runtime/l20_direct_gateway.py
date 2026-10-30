@@ -116,8 +116,9 @@ class L20DirectGateway:
                     raise L20DirectError("The provider handle belongs to different inputs")
                 return handle
             width, height = intent["canvas"]
-            if any(type(x) is not int or x < 64 or x > 4096 or x % 32 for x in (width, height)):
-                raise L20DirectError("L20 requires an exact 32-pixel aligned canvas")
+            multiple = 16 if intent["media_type"] == "video" else 32
+            if any(type(x) is not int or x < 64 or x > 4096 or x % multiple for x in (width, height)):
+                raise L20DirectError(f"L20 requires an exact {multiple}-pixel aligned canvas")
             prompt = intent["prompt"]
             if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 32768 or not intent.get("project"):
                 raise L20DirectError("The project and non-empty prompt must be explicit")
@@ -139,8 +140,10 @@ class L20DirectGateway:
                 with Image.open(source) as image:
                     image.load()
                     if intent["media_type"] == "video":
-                        if image.format != "PNG" or image.size != (width, height):
-                            raise L20DirectError("Video first and target-tail frames must match the exact PNG canvas")
+                        if image.format != "PNG" or not all(64 <= value <= 4096 for value in image.size):
+                            raise L20DirectError(
+                                "Video first and target-tail frames must be PNGs within 64..4096 pixels"
+                            )
                         atomic_write_bytes(target, source.read_bytes())
                     else:
                         ImageOps.pad(image.convert("RGB"), (width, height), color="black").save(target, format="PNG")

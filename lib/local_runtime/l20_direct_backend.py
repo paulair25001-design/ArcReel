@@ -253,7 +253,7 @@ class L20DirectVideoBackend(ProviderJobIdPersistenceMixin):
             request,
             result,
             seconds=request.duration_seconds,
-            resolution=VIDEO_RESOLUTIONS[0],
+            resolution=request.resolution or VIDEO_RESOLUTIONS[0],
             audio=True,
             reference_images=0,
             reference_to_video=False,
@@ -280,7 +280,7 @@ class L20DirectVideoBackend(ProviderJobIdPersistenceMixin):
             "media_type": "video",
             "prompt": request.prompt,
             "seed": _seed(request.seed, identity),
-            "canvas": list(canvas(request.aspect_ratio)),
+            "canvas": list(canvas(request.aspect_ratio, request.resolution)),
             "requested_frames": request.duration_seconds * VIDEO_FPS,
             "references": await run_sync_transaction(lambda: [_source(first), _source(tail)]),
         }
@@ -298,7 +298,7 @@ class L20DirectVideoBackend(ProviderJobIdPersistenceMixin):
         if (
             intent["project"] != request.project_name
             or intent["prompt"] != request.prompt
-            or intent["canvas"] != list(canvas(request.aspect_ratio))
+            or intent["canvas"] != list(canvas(request.aspect_ratio, request.resolution))
             or intent["requested_frames"] != request.duration_seconds * VIDEO_FPS
             or (request.seed is not None and request.seed != intent["seed"])
         ):

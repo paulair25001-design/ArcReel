@@ -12,7 +12,12 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from lib.local_runtime.l20_capabilities import IMAGE_REFERENCE_LIMIT, VIDEO_FPS, VIDEO_SAMPLING_STEPS
+from lib.local_runtime.l20_capabilities import (
+    IMAGE_REFERENCE_LIMIT,
+    VIDEO_FPS,
+    VIDEO_SAMPLING_STEPS,
+    video_native_canvas,
+)
 
 IMAGE_CHECKPOINT = "qwen_image_2.1_int8_convrot.safetensors"
 VIDEO_CHECKPOINT = "fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors"
@@ -195,4 +200,27 @@ def build_video_graph(
             },
         ),
     }
+    native_width, native_height = video_native_canvas(width, height)
+    if (native_width, native_height) != (width, height):
+        # Preserve the requested picture's geometry inside the aligned latent.
+        # Frozen input bytes stay intact for ArcReel's visual observation proof.
+        left, top = (native_width - width) // 2, (native_height - height) // 2
+        for endpoint in ("first", "tail"):
+            graph[f"{endpoint}_resize"] = _node(
+                "ImageScale", image=[endpoint, 0], upscale_method="lanczos", width=width, height=height, crop="center"
+            )
+            graph[f"{endpoint}_pad"] = _node(
+                "ImagePadForOutpaint",
+                image=[f"{endpoint}_resize", 0],
+                left=left,
+                top=top,
+                right=native_width - width - left,
+                bottom=native_height - height - top,
+                feathering=0,
+            )
+        graph["condition"]["inputs"].update(
+            width=native_width, height=native_height, first_frame=["first_pad", 0], last_frame=["tail_pad", 0]
+        )
+        graph["crop"] = _node("ImageCrop", image=["decode", 0], width=width, height=height, x=left, y=top)
+        graph["video"]["inputs"]["images"] = ["crop", 0]
     return DirectGraph(graph, "output", frames)

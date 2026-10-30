@@ -138,10 +138,12 @@ async def test_queue_resolver_keeps_local_routes_and_rejects_inflight_cloud_iden
 async def test_local_resolution_is_explicit_and_unsupported_saved_grid_or_video_sizes_are_refused(db_factory):
     resolver = ConfigResolver(db_factory)
     assert await resolver.resolve_resolution({}, "l20", IMAGE_MODEL) == "1K"
-    assert await resolver.resolve_resolution({}, "l20", VIDEO_MODEL) == "576p"
+    assert await resolver.resolve_resolution({}, "l20", VIDEO_MODEL) == "720p"
+    legacy = {"model_settings": {f"l20/{VIDEO_MODEL}": {"resolution": "576p"}}}
+    assert await resolver.resolve_resolution(legacy, "l20", VIDEO_MODEL) == "576p"
     assert grid_image_size(None, "l20", IMAGE_MODEL) is None
     assert grid_image_size(await resolver.resolve_resolution({}, "l20", IMAGE_MODEL), "l20", IMAGE_MODEL) == "1K"
-    for model, unsupported in ((IMAGE_MODEL, "2K"), (VIDEO_MODEL, "720p")):
+    for model, unsupported in ((IMAGE_MODEL, "2K"), (VIDEO_MODEL, "1080p")):
         project = {"model_settings": {f"l20/{model}": {"resolution": unsupported}}}
         with pytest.raises(LocalOnlyPolicyError, match="supports only"):
             await resolver.resolve_resolution(project, "l20", model)
@@ -161,7 +163,7 @@ async def test_l20_refuses_more_than_four_image_references_before_any_input_or_s
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("resolution", "available"), [("576p", True), ("720p", False), ("1080p", False)])
+@pytest.mark.parametrize(("resolution", "available"), [("576p", True), ("720p", True), ("1080p", False)])
 async def test_unsaved_video_resolution_preview_respects_local_graph_contract(
     db_factory, resolution: str, available: bool
 ):
@@ -183,7 +185,7 @@ async def test_unsaved_video_resolution_preview_respects_local_graph_contract(
     )
     if available:
         assert isinstance(result, VideoRequestFacts)
-        assert result.resolution == "576p"
+        assert result.resolution == resolution
     else:
         assert isinstance(result, VideoRequestFactsFailure)
         assert result.code == "video_capability_unavailable"

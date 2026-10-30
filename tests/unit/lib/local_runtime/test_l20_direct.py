@@ -22,7 +22,7 @@ from lib.billing.call_failure import classify_call_failure
 from lib.generation.task_failure_encoding import encode_task_failure_message
 from lib.infra.ffmpeg import ffmpeg_executable
 from lib.infra.media_probe import probe_media
-from lib.local_runtime.l20_capabilities import IMAGE_MODEL, IMAGE_REFERENCE_LIMIT
+from lib.local_runtime.l20_capabilities import IMAGE_MODEL, IMAGE_REFERENCE_LIMIT, VIDEO_MODEL, canvas, image_canvas
 from lib.local_runtime.l20_direct_backend import L20DirectImageBackend, L20DirectVideoBackend
 from lib.local_runtime.l20_direct_config import L20DirectConfig, get_l20_direct_config
 from lib.local_runtime.l20_direct_gateway import L20DirectError, L20DirectGateway
@@ -139,7 +139,7 @@ class Comfy:
         if path == "/object_info":
             graph = build_image_graph("cube", 64, 64, 1, [], "arcreel")
             edits = build_image_graph("cube", 64, 64, 1, ["ref"], "arcreel")
-            video = build_video_graph("move", 64, 64, 1, ["first", "tail"], 24, "arcreel")
+            video = build_video_graph("move", 1280, 720, 1, ["first", "tail"], 24, "arcreel")
             return httpx.Response(
                 200,
                 json={
@@ -444,9 +444,31 @@ def test_video_graph_uses_only_inference_nodes_and_explicit_both_endpoints():
         build_video_graph("move", 1024, 576, 4, ["first.png"], 192, "arcreel/one")
 
 
+@pytest.mark.parametrize(("ratio", "size"), [("16:9", (1280, 720)), ("9:16", (720, 1280))])
+def test_720p_graph_preserves_the_picture_inside_aligned_h3_keyframes(ratio, size):
+    assert canvas(ratio) == size
+    graph = build_video_graph("move", size[0], size[1], 4, ["first.png", "tail.png"], 144, "arcreel/720p").workflow
+    condition = graph["condition"]["inputs"]
+    assert condition["width"] % 32 == condition["height"] % 32 == 0
+    for endpoint in ("first", "tail"):
+        resize, pad = graph[f"{endpoint}_resize"]["inputs"], graph[f"{endpoint}_pad"]["inputs"]
+        assert (resize["width"], resize["height"]) == size
+        assert resize["image"] == [endpoint, 0]
+        assert pad["left"] + size[0] + pad["right"] == condition["width"]
+        assert pad["top"] + size[1] + pad["bottom"] == condition["height"]
+        assert condition[f"{'last' if endpoint == 'tail' else endpoint}_frame"] == [f"{endpoint}_pad", 0]
+    crop = graph["crop"]["inputs"]
+    assert (crop["width"], crop["height"]) == size
+    assert (crop["x"], crop["y"]) == (pad["left"], pad["top"])
+    assert graph["video"]["inputs"]["images"] == ["crop", 0]
+    assert image_canvas("16:9", "1K") == canvas("16:9", "576p") == (1024, 576)
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("native_rate", [24, 30])
-async def test_video_backend_persists_queue_identity_and_checks_real_decoding_and_delivery(tmp_path, native_rate):
+@pytest.mark.parametrize(("native_rate", "resolution"), [(24, "576p"), (30, "576p"), (24, "720p")])
+async def test_video_backend_persists_queue_identity_and_checks_real_decoding_and_delivery(
+    tmp_path, native_rate, resolution
+):
     client, server, resources = gateway(tmp_path / "state")
     first, tail, fixture = tmp_path / "first.png", tmp_path / "tail.png", tmp_path / "fixture.mp4"
 
@@ -462,7 +484,7 @@ async def test_video_backend_persists_queue_identity_and_checks_real_decoding_an
                 "-f",
                 "lavfi",
                 "-i",
-                f"color=c=red:s=1024x576:r={native_rate}",
+                f"color=c=red:s={'1280x720' if resolution == '720p' else '1024x576'}:r={native_rate}",
                 "-f",
                 "lavfi",
                 "-i",
@@ -494,7 +516,7 @@ async def test_video_backend_persists_queue_identity_and_checks_real_decoding_an
         end_image=tail,
         aspect_ratio="16:9",
         duration_seconds=1,
-        resolution="576p",
+        resolution=resolution,
         task_id="worker-one",
         project_name="demo",
     )
@@ -511,6 +533,13 @@ async def test_video_backend_persists_queue_identity_and_checks_real_decoding_an
             assert delivered.first_stream("audio") is not None
             assert result.provenance is not None
             assert result.provenance["runtime"] == "arcreel-native-comfyui"
+            # Resume after publication must retain its frozen size and never POST again.
+            assert await backend.resume_video(result.task_id, request) == result
+            usage = backend.metered_usage(VIDEO_MODEL, request, result)
+            assert usage.dimensions["resolution"] == resolution
+            for index, source in enumerate((first, tail)):
+                frozen = client.config.state_dir / "jobs" / result.task_id / f"reference-{index}.png"
+                assert frozen.read_bytes() == source.read_bytes()
     assert len(persisted) == 1
     assert persisted[0]["job_id"].startswith("arcreel-l20-")
     assert server.calls.count(("POST", "/prompt")) == 1
