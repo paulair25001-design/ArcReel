@@ -31,13 +31,13 @@ def _harness(tmp_path: Path, unit_ids: list[str]) -> ToolHarness:
     return ToolHarness("demo", tmp_path, pm)
 
 
-def _solid_video(path: Path, color: str) -> Path:
+def _solid_video(path: Path, color: str, *, duration: int = 1) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     run_bundled_ffmpeg(
         "-f",
         "lavfi",
         "-i",
-        f"color={color}:size=160x90:rate=25:duration=1",
+        f"color={color}:size=160x90:rate=25:duration={duration}",
         "-c:v",
         "libx264",
         "-pix_fmt",
@@ -103,6 +103,32 @@ async def test_naming_an_older_version_shows_that_versions_picture(tmp_path: Pat
         assert unit["version"] == version
         assert unit["available_versions"] == [1, 2]
         assert _dominant(envelope.images[0].data) == expected
+
+
+@pytest.mark.parametrize("requested_frames", [None, 48])
+async def test_default_and_dense_review_deliver_all_requested_contact_sheet_frames(
+    tmp_path: Path, requested_frames: int | None
+) -> None:
+    ctx = _harness(tmp_path, ["E1S01"])
+    source = _solid_video(ctx.project_path / ".staging" / "long.mp4", "red", duration=4)
+    install_current_video(ctx.project_path, "videos", "E1S01", source)
+    arguments: dict[str, Any] = {"unit_ids": ["E1S01"]}
+    if requested_frames is not None:
+        arguments["frames"] = requested_frames
+    outcome, envelope = await _inspect(ctx, arguments)
+    assert outcome.problem is None
+    result = envelope.structured["inspect_video_units"]
+    expected = 24 if requested_frames is None else requested_frames
+    assert result["frame_budget_per_unit"] == expected
+    assert result["total_frames"] == expected
+    unit = result["units"][0]
+    assert unit["frame_count"] == expected
+    assert len(envelope.images) == expected // 12
+    times = [time for sheet in unit["sheets"] for time in sheet["times"]]
+    assert len(set(times)) == expected
+    assert times == sorted(times)
+    assert times[0] < 0.2
+    assert times[-1] > 3.8
 
 
 async def test_signals_are_returned_with_marked_frames_and_cached_per_version(tmp_path: Path) -> None:
@@ -230,7 +256,7 @@ async def test_more_units_than_the_frame_budget_is_refused(tmp_path: Path) -> No
     assert problem.params == {"max_frames_per_call": MAX_FRAMES_PER_CALL}
 
 
-@pytest.mark.parametrize("frames", [0, 25])
+@pytest.mark.parametrize("frames", [0, 49])
 async def test_frames_outside_the_per_unit_range_are_invalid(tmp_path: Path, frames: int) -> None:
     ctx = _harness(tmp_path, ["E1S01"])
 

@@ -12,7 +12,7 @@ VIDEO_MODEL = "fasth3-v2-4step"
 IMAGE_REFERENCE_LIMIT = 4
 IMAGE_SIZES = ("1K",)
 VIDEO_DURATIONS = tuple(range(1, 11))
-VIDEO_RESOLUTIONS = ("720p", "576p")
+VIDEO_RESOLUTIONS = ("736p", "720p", "576p")
 VIDEO_FPS = 24
 VIDEO_SAMPLING_STEPS = 4
 REQUIRES_END_FRAME = True
@@ -40,10 +40,13 @@ def _canvas(aspect_ratio: str, short_edge: int, multiple: int) -> tuple[int, int
 
 
 def canvas(aspect_ratio: str, resolution: str | None = None) -> tuple[int, int]:
-    """Deliver 720p by default while retaining explicitly frozen 576p requests."""
+    """Deliver the native 32-pixel canvas while retaining frozen lower-resolution requests."""
     resolution = resolution or VIDEO_RESOLUTIONS[0]
     if resolution not in VIDEO_RESOLUTIONS:
         raise ValueError("Unsupported local video resolution")
+    if resolution == "736p":
+        width, height = _canvas(aspect_ratio, 720, 16)
+        return video_native_canvas(width, height)
     return _canvas(aspect_ratio, int(resolution.removesuffix("p")), 16 if resolution == "720p" else 32)
 
 

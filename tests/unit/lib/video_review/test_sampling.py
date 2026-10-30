@@ -6,6 +6,7 @@ import pytest
 
 from lib.video_review.sampling import plan_frame_indices
 from lib.video_review.signals import TimeSpan, VideoSignals
+from server.media_tools.video_review import DEFAULT_FRAMES_PER_UNIT
 
 _FRAME_TIMES = [index * 0.04 for index in range(100)]
 
@@ -16,6 +17,16 @@ def _signals(*, cuts: tuple[float, ...] = (), black: tuple[TimeSpan, ...] = ()) 
 
 def test_without_signals_the_plan_is_even_sampling() -> None:
     assert plan_frame_indices(_FRAME_TIMES, None, 4, max_count=24) == [12, 37, 62, 87]
+
+
+def test_default_review_samples_a_brief_midshot_defect_between_sparse_sample_points() -> None:
+    # A three-frame defect at 0.36–0.44 s in a four-second 25 fps clip.
+    defect = {9, 10, 11}
+    sparse = plan_frame_indices(_FRAME_TIMES, None, 8, max_count=48)
+    default = plan_frame_indices(_FRAME_TIMES, None, DEFAULT_FRAMES_PER_UNIT, max_count=48)
+    assert not defect.intersection(sparse)
+    assert defect.intersection(default)
+    assert len(default) == 24
 
 
 def test_a_video_shorter_than_the_budget_uses_every_frame() -> None:

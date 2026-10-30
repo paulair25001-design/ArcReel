@@ -27,7 +27,7 @@ from lib.video_review.sampling import plan_frame_indices
 from lib.video_review.signals import TAG_BLACK, TAG_CUT, TAG_FREEZE, VideoSignals
 
 MAX_FRAMES_PER_SHEET = 12
-MAX_SHOT_FRAMES = 24
+MAX_SHOT_FRAMES = 48
 MAX_SHEET_EDGE = 2000
 
 _EXTRACT_DEADLINE_SECONDS = 120.0

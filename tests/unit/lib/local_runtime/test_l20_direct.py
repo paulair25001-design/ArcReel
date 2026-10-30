@@ -446,7 +446,7 @@ def test_video_graph_uses_only_inference_nodes_and_explicit_both_endpoints():
 
 @pytest.mark.parametrize(("ratio", "size"), [("16:9", (1280, 720)), ("9:16", (720, 1280))])
 def test_720p_graph_preserves_the_picture_inside_aligned_h3_keyframes(ratio, size):
-    assert canvas(ratio) == size
+    assert canvas(ratio, "720p") == size
     graph = build_video_graph("move", size[0], size[1], 4, ["first.png", "tail.png"], 144, "arcreel/720p").workflow
     condition = graph["condition"]["inputs"]
     assert condition["width"] % 32 == condition["height"] % 32 == 0
@@ -464,10 +464,25 @@ def test_720p_graph_preserves_the_picture_inside_aligned_h3_keyframes(ratio, siz
     assert image_canvas("16:9", "1K") == canvas("16:9", "576p") == (1024, 576)
 
 
+@pytest.mark.parametrize(("ratio", "size"), [("16:9", (1280, 736)), ("9:16", (736, 1280))])
+def test_default_video_preserves_the_native_canvas_without_padding_or_cropping(ratio, size):
+    assert canvas(ratio) == canvas(ratio, "736p") == size
+    graph = build_video_graph("move", size[0], size[1], 4, ["first.png", "tail.png"], 144, "arcreel/native").workflow
+    condition = graph["condition"]["inputs"]
+    assert (condition["width"], condition["height"]) == size
+    assert condition["first_frame"] == ["first", 0]
+    assert condition["last_frame"] == ["tail", 0]
+    assert graph["video"]["inputs"]["images"] == ["decode", 0]
+    assert not {node["class_type"] for node in graph.values()} & {"ImagePadForOutpaint", "ImageCrop", "ImageScale"}
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("native_rate", "resolution"), [(24, "576p"), (30, "576p"), (24, "720p")])
+@pytest.mark.parametrize(
+    ("native_rate", "resolution", "expected_size"),
+    [(24, "576p", (1024, 576)), (30, "576p", (1024, 576)), (24, "720p", (1280, 720)), (24, None, (1280, 736))],
+)
 async def test_video_backend_persists_queue_identity_and_checks_real_decoding_and_delivery(
-    tmp_path, native_rate, resolution
+    tmp_path, native_rate, resolution, expected_size
 ):
     client, server, resources = gateway(tmp_path / "state")
     first, tail, fixture = tmp_path / "first.png", tmp_path / "tail.png", tmp_path / "fixture.mp4"
@@ -484,7 +499,7 @@ async def test_video_backend_persists_queue_identity_and_checks_real_decoding_an
                 "-f",
                 "lavfi",
                 "-i",
-                f"color=c=red:s={'1280x720' if resolution == '720p' else '1024x576'}:r={native_rate}",
+                f"color=c=red:s={expected_size[0]}x{expected_size[1]}:r={native_rate}",
                 "-f",
                 "lavfi",
                 "-i",
@@ -536,7 +551,7 @@ async def test_video_backend_persists_queue_identity_and_checks_real_decoding_an
             # Resume after publication must retain its frozen size and never POST again.
             assert await backend.resume_video(result.task_id, request) == result
             usage = backend.metered_usage(VIDEO_MODEL, request, result)
-            assert usage.dimensions["resolution"] == resolution
+            assert usage.dimensions["resolution"] == (resolution or "736p")
             for index, source in enumerate((first, tail)):
                 frozen = client.config.state_dir / "jobs" / result.task_id / f"reference-{index}.png"
                 assert frozen.read_bytes() == source.read_bytes()
