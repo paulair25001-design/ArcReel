@@ -13,8 +13,8 @@ from lib.db.base import DEFAULT_USER_ID
 from lib.infra.content_digest import prefixed_canonical_json_digest
 from lib.local_runtime.config import LocalRuntimeConfig, get_local_runtime_config
 from lib.local_runtime.l20_resource_state import resource_handoff_complete
+from server.agent_runtime.hermes_vision_bridge import PROTOCOL as _PROTOCOL
 
-_PROTOCOL = "arcreel-mcp-vision/v2"
 _REPORT_SCHEMA = "arcreel-native-agent-report/v1"
 _SHA = re.compile(r"[a-f0-9]{64}")
 

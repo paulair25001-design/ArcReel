@@ -106,7 +106,7 @@ def _row(data, version):
 
 def _events(rows, *, transport="boot-a", session="sid", request=1):
     common = {
-        "protocol": "arcreel-mcp-vision/v2",
+        "protocol": "arcreel-mcp-vision/v3",
         "transport_id": transport,
         "session_id": session,
         "request_id": request,
@@ -158,7 +158,7 @@ async def test_native_delegated_image_review_counts_only_for_its_own_parent(fram
     *_, first, tail = frames
     path = tmp_path / "audit.jsonl"
     started = {
-        "protocol": "arcreel-mcp-vision/v2",
+        "protocol": "arcreel-mcp-vision/v3",
         "event": "agent_started",
         "session_id": "review-child",
         "parent_session_id": owned_parent,
@@ -184,6 +184,7 @@ async def test_native_delegated_image_review_counts_only_for_its_own_parent(fram
         "wire_not_sent",
         "fake_source",
         "v1",
+        "v2",
     ],
 )
 async def test_capture_or_forged_or_unsent_observations_do_not_pass(frames, tmp_path, change):
@@ -217,7 +218,7 @@ async def test_capture_or_forged_or_unsent_observations_do_not_pass(frames, tmp_
             row["source_sha256"] = "b" * 64
     else:
         for row in events:
-            row["protocol"] = "arcreel-mcp-vision/v1"
+            row["protocol"] = f"arcreel-mcp-vision/{change}"
     path = tmp_path / "audit.jsonl"
     _audit(path, events)
     result = await _read(frames, path)

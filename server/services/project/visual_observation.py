@@ -25,8 +25,8 @@ from lib.local_runtime.config import LocalRuntimeConfig, get_local_runtime_confi
 from lib.project.project_manager import ProjectManager, find_episode
 from lib.script.script_models import get_generated_assets
 from lib.script.storyboard_sequence import get_storyboard_items
+from server.agent_runtime.hermes_vision_bridge import PROTOCOL as _PROTOCOL
 
-_PROTOCOL = "arcreel-mcp-vision/v2"
 _SHA = re.compile(r"[0-9a-f]{64}")
 _PROVENANCE = ("source_sha256", "source_pixel_sha256", "wire_image_sha256")
 

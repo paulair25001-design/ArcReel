@@ -132,7 +132,7 @@ from openai import OpenAI
 seen = []
 def respond(request):
     body = json.loads(request.content)
-    part = body["messages"][-1]["content"][1]
+    part = next(part for part in body["messages"][-1]["content"] if part.get("type") == "image_url")
     image = base64.b64decode(part["image_url"]["url"].split(",", 1)[1])
     seen.append({"image_sha256": hashlib.sha256(image).hexdigest(), "role": body["messages"][-1]["role"]})
     return httpx.Response(200, json={"id": "test", "object": "chat.completion", "created": 0,
@@ -257,5 +257,5 @@ print(json.dumps({"supports_vision": vision, "supports_tool_images": tool_vision
     assert receipt["compression_then_main_image_counts"] == [0, 16]
     assert 1500 <= receipt["canonical_image_token_estimate"] < 3000
     assert receipt["seen"] == [
-        {"image_sha256": "1057be407cc0d2f2cc32591559baa6f615df8a1d0a3f18f1308eccd1ef754cc2", "role": "tool"}
+        {"image_sha256": "1057be407cc0d2f2cc32591559baa6f615df8a1d0a3f18f1308eccd1ef754cc2", "role": "user"}
     ]

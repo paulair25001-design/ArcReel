@@ -29,6 +29,8 @@ class RouterTransport:
         self.busy_slots = False
         self.probe_failure = False
         self.catalog = {"alpha", "beta"}
+        self.async_load = False
+        self.loading_snapshots = 0
 
     def connect(self):
         self.calls.append(("connect", {}))
@@ -40,6 +42,11 @@ class RouterTransport:
         payload = payload or {}
         self.calls.append((operation, copy.deepcopy(payload)))
         if operation == "snapshot":
+            if self.loading_snapshots:
+                self.loading_snapshots -= 1
+                if not self.loading_snapshots:
+                    for model in self.models.values():
+                        model["state"] = "loaded"
             return {
                 "router": copy.deepcopy(self.router),
                 "models": copy.deepcopy(list(self.models.values())),
@@ -66,8 +73,16 @@ class RouterTransport:
             return {}
         if operation == "load":
             assert payload["model"] not in self.models
+            if any(model["state"] == "loading" for model in self.models.values()):
+                raise RuntimeError("Concurrent model startup exceeded available VRAM")
             name = payload["model"]
-            self.models[name] = {"id": name, "state": "loaded", "port": 7010 + len(self.models)}
+            self.models[name] = {
+                "id": name,
+                "state": "loading" if self.async_load else "loaded",
+                "port": 7010 + len(self.models),
+            }
+            if self.async_load:
+                self.loading_snapshots = 2
             return {}
         if operation == "start_comfy":
             assert self.models == {}
@@ -176,6 +191,21 @@ def test_normal_finish_restores_original_names_without_restarting_the_router(res
     assert set(transport.models) == {"alpha", "beta"}
     assert transport.owned_engine is False
     assert [payload["model"] for operation, payload in transport.calls if operation == "load"] == ["alpha", "beta"]
+
+
+def test_restoration_waits_for_each_load_and_places_the_standby_model_last(resources):
+    session, transport, _ = resources
+    session.config = replace(session.config, standby_model="alpha")
+    session.begin("demo")
+    transport.async_load = True
+
+    finished = session.finish("demo")
+
+    assert finished["state"] == "restored"
+    assert finished["original_service_restored"] is True
+    assert finished["restoration_targets"] == ["beta", "alpha"]
+    assert all(model["state"] == "loaded" for model in finished["restored"]["models"])
+    assert [payload["model"] for operation, payload in transport.calls if operation == "load"] == ["beta", "alpha"]
 
 
 def test_retry_finish_skips_an_already_stopped_engine_and_rechecks_original_models(resources):

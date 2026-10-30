@@ -54,7 +54,7 @@ def _review(timestamp=100, **changes):
 
 def _event(event="native_finalization", timestamp=120, **changes):
     return {
-        "protocol": "arcreel-mcp-vision/v2",
+        "protocol": "arcreel-mcp-vision/v3",
         "event": event,
         "project_name": "demo",
         "session_id": "parent-sid",

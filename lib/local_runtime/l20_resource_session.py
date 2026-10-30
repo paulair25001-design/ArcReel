@@ -220,19 +220,22 @@ class L20ResourceSession:
         if self.config.standby_model:
             if self.config.standby_model not in available:
                 raise RuntimeError("Configured L20 standby model is not available on the current router")
-            if self.config.standby_model not in targets:
-                targets.append(self.config.standby_model)
+            targets = [name for name in targets if name != self.config.standby_model] + [self.config.standby_model]
         record["restoration_targets"] = targets
         self._save(record)
         for name in targets:
             current = self._snapshot()
-            if name in {x["id"] for x in current["models"]}:
-                continue
-            # A lost load response is reconciled from router state on the next
-            # finish call. It is never followed immediately by a duplicate POST.
-            record["load_requests"].append(name)
-            self._save(record)
-            self.transport.rpc("load", {"model": name, "router": current["router"]}, timeout=270)
+            model = next((item for item in current["models"] if item["id"] == name), None)
+            if model is None:
+                # A lost load response is reconciled from router state on the
+                # next finish call, without immediately repeating the POST.
+                record["load_requests"].append(name)
+                self._save(record)
+                self.transport.rpc("load", {"model": name, "router": current["router"]}, timeout=270)
+            if model is None or model["state"] != "loaded":
+                # A successful load POST acknowledges startup, not residency.
+                # Settle each model before the standby model can occupy VRAM.
+                self._wait_models([name], allow_extra=True)
         record["restored"] = self._wait_models(targets, allow_extra=True)
         if record["restored"]["health"].get("status") != "ok":
             raise RuntimeError("Original L20 router health is unconfirmed")
