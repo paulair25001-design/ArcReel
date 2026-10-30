@@ -145,6 +145,31 @@ def test_only_real_native_handoff_records_finalization_after_parent_and_child_wr
     )
 
 
+def test_actual_unloaded_handoff_records_closure_without_claiming_models_were_restored(tmp_path: Path):
+    transport = VisionTransport(tmp_path, base_url="http://127.0.0.1:8000/v1", model="qwen")
+    transport.begin_turn("parent")
+    local = {
+        "project": "demo",
+        "restoration": {
+            "state": "closed",
+            "restore_original_models": False,
+            "original_service_restored": False,
+            "resource_released": True,
+        },
+    }
+
+    _native_tool(transport, {"structuredContent": {"local_session": local}}, "finish_local_session")(
+        {"project": "demo"}
+    )
+
+    event = _receipt(tmp_path)[-1]
+    assert event["event"] == "native_finalization"
+    assert event["state"] == "closed"
+    assert event["original_service_restored"] is False
+    assert event["restore_original_models"] is False
+    assert event["resource_released"] is True
+
+
 @pytest.mark.parametrize("failure", ["business_error", "not_restored", "wrong_project", "read_tool"])
 def test_refusals_and_nonfinal_calls_cannot_acknowledge_native_delivery(tmp_path: Path, failure: str):
     transport = VisionTransport(tmp_path, base_url="http://127.0.0.1:8000/v1", model="qwen")

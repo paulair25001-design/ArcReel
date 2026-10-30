@@ -23,7 +23,7 @@ bash scripts/start_local.sh
 
 目标和同一 Hermes 会话的绑定保存在原生数据库。后台在队列落账后继续该会话，等待期间只检查数据库与任务状态，不反复调用模型。应用恢复时先对账，已有请求状态不明确时不重放上次生成命令。所有生产写入经过项目阶段屏障，配音、图片编辑或渲染未结束时不会进入下一阶段。连续三轮没有原生产物或准备状态推进会进入「需处理」，保留结果并安全归还资源，不假报成功或无限重试。
 
-分集页可查看进度并打开自动会话；「停止自动制作」保存停止意图，等待已接受媒体任务结束后归还资源。停止或删除该自动会话也会停止目标，后台不会重新唤起它。自动目标的完成条件是该集指定的 `current` 原生成片，旁白项目必须带完整旁白和烧录字幕，且本目标的 L20 会话已恢复原模型。后台还核对本目标创建后实际成功的 `finish_local_session` 收尾，收尾须晚于最后一次原生审片与生产写入；旧成片或模型自述的批次不代表本目标完成。完成状态是技术完成，不代表真实听审、连续播放或口型验收。此入口不授权发布或向外发送。
+分集页可查看进度并打开自动会话；「停止自动制作」保存停止意图，等待已接受媒体任务结束后归还资源。停止或删除该自动会话也会停止目标，后台不会重新唤起它。自动目标的完成条件是该集指定的 `current` 原生成片，旁白项目必须带完整旁白和烧录字幕，且本目标的 L20 会话已按模型恢复设置完成收尾。后台还核对本目标创建后实际成功的 `finish_local_session` 收尾，收尾须晚于最后一次原生审片与生产写入；旧成片或模型自述的批次不代表本目标完成。完成状态是技术完成，不代表真实听审、连续播放或口型验收。此入口不授权发布或向外发送。
 
 对应原生接口为 `POST /api/v1/projects/{project}/autonomous-production`，请求包含 `episode_id`、`objective`、`client_key`；可选 `resume_session_id` 续接同用户、同项目拥有的 Hermes 会话，复用有效报告与未变化的媒体，原目标历史保持原样；相同用户、项目和 `client_key` 幂等，不能同时建立两个活动目标。`GET .../latest` 与 `GET .../{run_id}` 查询状态，`POST .../{run_id}/stop` 停止。接口继续使用工作台登录认证，项目与用户身份按原生范围校验。
 
@@ -62,7 +62,9 @@ FastH3 的原生对齐帧数可能超过声明时长，适配器保留原片，�
 
 图像和视频共享本项目的 L20 资源会话与跨进程锁。ArcReel 保存原 llama router 的模型 loaded 集合和身份，核实所有 child slots 连续两轮空闲后，通过 router 的 `/models/unload` 释放模型；router 进程保持运行。制作期间不会在每个镜头之间反复恢复原模型。模型权重、已安装 ComfyUI 和纯推理节点属于运行依赖；项目队列、审核与剪辑仍由 ArcReel 管理。
 
-当整个项目的媒体任务完成，或停止制作且任务队列已空时，让 Hermes 调用 `finish_local_session`。应用等待自己的 ComfyUI 队列清空、释放推理模型后，通过 `/models/load` 恢复原先的 loaded 集合，并核对健康状态与空闲 slots。恢复失败时保留持久记录与恢复责任，不报告完成。
+当整个项目的媒体任务完成，或停止制作且任务队列已空时，让 Hermes 调用 `finish_local_session`。应用等待自己的 ComfyUI 队列清空并释放推理模型。`ARCREEL_L20_RESTORE_ORIGINAL_MODELS=false` 时，只关闭本项目拥有的媒体服务，不自动加载原 llama 模型；完成、手动停止、异常回退和应用退出均使用该设置。收尾记录为 `state=closed`、`resource_released=true`、`original_service_restored=false`，原生自动目标按这些实际收尾事实结算，不把未恢复模型当成失败，也不假报模型已经恢复。
+
+该设置不拦截其他用户的请求，也不增加占用检测、自动暂停或等待。router 保持运行，其他请求仍可能加载模型。显式设置为 `true` 时才恢复原先的 loaded 集合并核对健康状态与空闲 slots；未设置时保留这一兼容行为。恢复或关闭失败时保留持久记录与收尾责任，不报告完成。
 
 点击停止或删除对话会话时，应用也会等待该项目的排队和运行任务结束，再结束本项目资源会话；停止对话不等于取消已提交的媒体作业。继续制作会撤销尚未执行的恢复请求；同项目另有工作中的对话时，也会保留制作会话。应用正常退出及异常关闭的收尾路径都会先等待工作任务，再结束本应用拥有的资源会话。
 
@@ -87,6 +89,10 @@ Hermes ACP 的原生 Agent 工厂未传入 CLI 的思考与迭代参数，因此
 公共配置要求压缩前 checkpoint 时，本项目为该隔离 Agent 安装 Hermes 原生 manager-level API v2。完整原始会话与 normalized evidence 保存在当前私有 home 的 `checkpoints/pre-compress/{SID}/{SHA}.json`；文件 `0600`、目录 `0700`，经原子发布、文件及目录 fsync、SHA 回读验证后才返回引用。摘要失败不删除原始会话或已有 checkpoint。这里只提供项目内的上下文检查点，不加载全局外部记忆插件、其状态工具或旧制作流程。
 
 本地配音原始执行回执保存在 `runtime/tts/receipts/`，版本记录绑定原始回执哈希及实际提交的 WAV。回执中的「未听审」状态保持原样。
+
+原生制作状态的 `units[].speech_timing` 分开报告按项目语速估算的发声时长、实际旁白 WAV 时长、超出编排的秒数与音频时效。全自主 storyboard + TTS 制作可先经原生配音工具补缺，再用实测时长复核视频预算；视频准入仍只消费正式脚本与模型能力，不增加配音依赖。已有素材与旧配音不会因此自动重生。
+
+每条原生时间线的 `editing_facts` 汇总定格秒数及占比、同版本源片重复使用的区间、同镜与异镜转场数量和旁白文件间隔。间隔可能包含角色对白或其他画面，并不等于静音；这些字段是剪辑事实，不是质量评分或新的阻断闸门。主 Agent 按原生审片报告处理每次复用的可用区间，交付时区分源片抽帧、成片检查与实际听审，未提供声音感知证据时保留未验证。
 
 配音由本仓库的 `lib/local_runtime/qwen_tts_worker.py` 直接调用已安装的独立 MLX Audio 引擎库。模型必须是已存在的本地 Qwen3-TTS VoiceDesign；引擎运行在禁止网络的 macOS 沙箱中，并关闭模型下载、参考音频转录、自动播放与云端回退。声音输入经权限为 `0600` 的项目私有请求文件传入，不出现在命令行或正常标准输出中；完整 PCM 验证后才登记版本。项目代码不调用外部 skill wrapper、旧制作流程或它们的锁文件。
 
@@ -114,6 +120,7 @@ ARCREEL_L20_SSH_TARGET=my-l20
 ARCREEL_L20_SSH_OPTIONS_JSON='["-o","BatchMode=yes","-o","StrictHostKeyChecking=yes"]'
 ARCREEL_L20_COMFY_URL=http://127.0.0.1:18191
 ARCREEL_L20_ROUTER_URL=http://127.0.0.1:18080
+ARCREEL_L20_RESTORE_ORIGINAL_MODELS=false
 # ARCREEL_L20_DIRECT_STATE_DIR=/path/to/arcreel-data/runtime/l20-direct
 # ARCREEL_L20_COMFY_PYTHON=/path/to/installed/comfyui/python
 # ARCREEL_L20_COMFY_ENGINE=/path/to/installed/ComfyUI

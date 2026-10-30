@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from dataclasses import replace
 
 import pytest
 import respx
@@ -24,6 +25,7 @@ class RouterTransport:
         self.owned_engine = False
         self.unload_failure = None
         self.lose_start_response = False
+        self.busy_slots = False
 
     def connect(self):
         self.calls.append(("connect", {}))
@@ -42,6 +44,8 @@ class RouterTransport:
                 "gpu_mib": "45000, 1000",
             }
         if operation == "slots":
+            if self.busy_slots:
+                raise RuntimeError("Original model has an active or unknown slot")
             assert all(item["state"] == "loaded" for item in payload["models"])
             return {"idle": True}
         if operation == "unload":
@@ -136,8 +140,10 @@ def test_lost_start_response_stops_only_the_known_owned_engine_before_restoring(
     assert stopped == [{"root": record(session)["remote_root"]}]
 
 
-def test_busy_comfy_queue_refuses_finish_without_stop_or_original_model_load(resources):
+@pytest.mark.parametrize("restore", [True, False])
+def test_busy_comfy_queue_refuses_finish_without_stop_or_original_model_load(resources, restore):
     session, transport, mock = resources
+    session.config = replace(session.config, restore_original_models=restore)
     session.begin("demo")
     before = len(transport.calls)
     mock.get(session.config.comfy_url + "/queue").respond(
@@ -163,3 +169,73 @@ def test_normal_finish_restores_original_names_without_restarting_the_router(res
     assert set(transport.models) == {"alpha", "beta"}
     assert transport.owned_engine is False
     assert [payload["model"] for operation, payload in transport.calls if operation == "load"] == ["alpha", "beta"]
+
+
+def test_retry_finish_skips_an_already_stopped_engine_and_rechecks_original_models(resources):
+    session, transport, mock = resources
+    session.begin("demo")
+    transport.busy_slots = True
+    with pytest.raises(RuntimeError, match="active or unknown slot"):
+        session.finish("demo")
+    assert record(session)["engine_stop"]["stopped"] is True
+    assert record(session)["state"] == "restoring"
+    mock.get(session.config.comfy_url + "/queue").respond(503)
+    transport.busy_slots = False
+
+    finished = session.finish("demo")
+
+    assert finished["state"] == "restored"
+    assert finished["original_service_restored"] is True
+    assert len([operation for operation, _ in transport.calls if operation == "stop_comfy"]) == 1
+
+
+def test_disabled_restore_closes_only_the_owned_engine_and_allows_the_next_native_session(resources):
+    session, transport, _ = resources
+    session.config = replace(session.config, restore_original_models=False)
+    first = session.begin("demo")
+    assert transport.models == {}
+
+    finished = session.finish("demo")
+
+    assert finished["state"] == "closed"
+    assert finished["original_service_restored"] is False
+    assert finished["resource_released"] is True
+    assert finished["restore_original_models"] is False
+    assert transport.owned_engine is False
+    assert transport.models == {}
+    assert not any(operation == "load" for operation, _ in transport.calls)
+    session.finish("demo")
+    assert len([operation for operation, _ in transport.calls if operation == "stop_comfy"]) == 1
+    second = session.begin("demo")
+    assert second["session"] != first["session"]
+    assert second["original"]["models"] == []
+    assert second["state"] == "active"
+
+
+def test_disabling_restore_during_an_existing_transition_does_not_touch_a_restarted_router(resources):
+    session, transport, _ = resources
+    session.begin("demo")
+    transport.router["birth"] = "external-restart"
+    before = len(transport.calls)
+    session.config = replace(session.config, restore_original_models=False)
+
+    finished = session.finish("demo")
+
+    assert finished["state"] == "closed"
+    assert finished["original_service_restored"] is False
+    assert transport.owned_engine is False
+    assert not any(operation in {"snapshot", "slots", "unload", "load"} for operation, _ in transport.calls[before:])
+
+
+def test_failed_admission_honors_disabled_restore_without_reloading_released_models(resources):
+    session, transport, _ = resources
+    session.config = replace(session.config, restore_original_models=False)
+    transport.unload_failure = "beta"
+
+    with pytest.raises(RuntimeError, match="unload failed"):
+        session.begin("demo")
+
+    assert set(transport.models) == {"beta"}
+    assert record(session)["state"] == "closed"
+    assert record(session)["original_service_restored"] is False
+    assert not any(operation == "load" for operation, _ in transport.calls)

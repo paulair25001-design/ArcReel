@@ -100,7 +100,9 @@ protected: false
 - **scene_id**：`E{{ episode }}S{两位序号}` 格式（如 E{{ episode }}S01），按分镜顺序递增，不得用其他集号前缀。
 - **duration_seconds**：
   - 档位：{% if default_duration %}从支持的秒数档位（{{ durations }}）中按画面内容选择：默认 {{ default_duration }} 秒，打斗 / 大场面 / 情绪铺陈等画面可取更长档至 {{ max_duration }} 秒，不要默认选最短档{% else %}从支持的秒数档位（{{ durations }}）中按画面内容复杂度匹配合适时长（最长 {{ max_duration }} 秒），不强制默认值{% endif %}。
-  - 口播下界：先估算该场 utterances（台词 + 画外音）念完约需的秒数（口播语速约 {{ speech_rate }} {{ speech_unit }}/秒），在上述档位里取**不低于**这个秒数的最接近档位。这是单向下界，画面 / 情绪留白可在此之上取更长档位；utterances 为空的分镜没有此下界；若口播估算已超过最长 {{ max_duration }} 秒，取最长档即可，不删减台词。
+  - 口播下界：先估算该场 utterances（台词 + 画外音）念完约需的秒数（口播语速约 {{ speech_rate }} {{ speech_unit }}/秒），再为换气、动作反应与语义转折留出时间，在上述档位里取能容纳完整发声与留白的档位。utterances 为空的分镜没有口播下界。
+  - 超长口播：若完整发声与留白超过最长 {{ max_duration }} 秒，先按语义和动作拆为连续分镜，再为各镜分配合法时长；逐字口播按原顺序完整分配，不删词、不重读、不用省略号代替正文。每镜有不同的画面信息或动作进展，不把同一动作的重播、长尾帧定格或加快念稿作为补时长方案。
+  - 实测复核：估算只是规划依据，实际 TTS 完成后需按 WAV 实测时长复核；单集软目标不能把必要口播与停顿挤入更短的镜头。
 {% if episode_target_duration %}
   - 单集目标：{{ partial("shared/episode_target_duration_rule") }}。
 {% endif %}

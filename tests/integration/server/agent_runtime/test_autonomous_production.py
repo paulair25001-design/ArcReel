@@ -127,6 +127,8 @@ async def test_drama_continuation_preserves_native_speech_owner_and_actual_video
     unit["speech"] = {"unit_id": "E2S01", "allowed": True, "mode": "character_speech", "problems": []}
     unit["audio"] = {"status": "missing", "actual_seconds": None}
     unit["video"] = {"status": "current", "provider_audio": True, "has_audio": True}
+    unit["speech_timing"] = {"estimated_seconds": 5.6, "measured_narration_seconds": None}
+    rig.facts["timelines"] = [{"timeline_id": "tl-demo", "editing_facts": {"hold_seconds": 21.0}}]
     await rig.service.advance(rig.goal)
     context = json.loads(rig.assistant.calls[0]["content"].splitlines()[1])
     actual = context["facts"]["units"][0]
@@ -134,6 +136,8 @@ async def test_drama_continuation_preserves_native_speech_owner_and_actual_video
     assert actual["video"]["provider_audio"] is True
     assert actual["video"]["has_audio"] is True
     assert actual["audio"]["status"] == "missing"
+    assert actual["speech_timing"] == unit["speech_timing"]
+    assert context["facts"]["timelines"] == rig.facts["timelines"]
     assert context["facts"]["goal_complete_technical"] is False
 
 
@@ -194,6 +198,20 @@ async def test_final_cut_and_resource_restoration_are_required_for_goal_completi
     await rig.service.advance(rig.goal)
     assert (await rig.store.get(rig.goal["id"], "default"))["state"] == "completed"
     assert len(rig.assistant.calls) == 1
+
+
+async def test_final_cut_can_complete_after_explicit_unloaded_closure_without_restoration_claim(rig):
+    rig.facts["goal_complete_technical"] = True
+    rig.facts["resource"].update(
+        state="closed", original_service_restored=False, restore_original_models=False, resource_released=True
+    )
+
+    await rig.service.advance(rig.goal)
+
+    result = await rig.store.get(rig.goal["id"], "default")
+    assert result["state"] == "completed"
+    assert rig.assistant.calls == []
+    assert rig.finished == []
 
 
 async def test_existing_cut_and_restored_resources_cannot_complete_a_waiting_native_goal(rig):

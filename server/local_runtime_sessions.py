@@ -143,7 +143,7 @@ async def drain_and_finalize_local_media(
     stop_pending: Callable[[], Awaitable[None]] = shutdown_local_project_finalizers,
     finish: Callable[[], Awaitable[None]] = _finish_active_project,
 ) -> None:
-    """Cancel only watchers, drain active generation, and always request exact restoration."""
+    """Cancel watchers, drain generation, and finalize with the configured model policy."""
     errors: list[BaseException] = []
     for operation in (stop_pending, stop_worker, finish):
         if operation is not None:

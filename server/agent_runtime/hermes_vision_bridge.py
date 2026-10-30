@@ -7,6 +7,7 @@ import binascii
 import contextvars
 import functools
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -18,6 +19,15 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+# Hermes loads this shim by file path without ArcReel on its Python import path.
+_resource_spec = importlib.util.spec_from_file_location(
+    "arcreel_l20_resource_state", Path(__file__).resolve().parents[2] / "lib/local_runtime/l20_resource_state.py"
+)
+if _resource_spec is None or _resource_spec.loader is None:
+    raise RuntimeError("ArcReel native resource handoff contract is unavailable")
+_resource_state = importlib.util.module_from_spec(_resource_spec)
+_resource_spec.loader.exec_module(_resource_state)
 
 PROTOCOL = "arcreel-mcp-vision/v2"
 TRUSTED_VISION_NOTICE = (
@@ -284,6 +294,7 @@ class VisionTransport:
         project = arguments.get("project") if isinstance(arguments, dict) else None
         if not isinstance(project, str) or not project:
             return
+        finalization_fields: dict[str, Any] = {}
         if tool_name == "finish_local_session":
             local = content.get("local_session")
             restoration = local.get("restoration") if isinstance(local, dict) else None
@@ -291,10 +302,18 @@ class VisionTransport:
                 not isinstance(local, dict)
                 or local.get("project") != project
                 or not isinstance(restoration, dict)
-                or restoration.get("state") != "restored"
-                or restoration.get("original_service_restored") is not True
+                or not _resource_state.resource_handoff_complete(restoration)
             ):
                 return
+            finalization_fields = {
+                "state": restoration["state"],
+                "original_service_restored": restoration["original_service_restored"],
+                **{
+                    key: restoration[key]
+                    for key in ("restore_original_models", "resource_released")
+                    if key in restoration
+                },
+            }
             event, source = "native_finalization", local
         elif tool_name in self.writer_tools or tool_name.startswith("generate_"):
             event, source = "native_write_success", content
@@ -308,7 +327,7 @@ class VisionTransport:
                 source_sha256=hashlib.sha256(
                     json.dumps(source, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
                 ).hexdigest(),
-                **({"original_service_restored": True} if event == "native_finalization" else {}),
+                **finalization_fields,
             )
 
     def install_mcp(self, module: Any) -> None:

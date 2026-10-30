@@ -12,6 +12,7 @@ from typing import Any
 from lib.db.base import DEFAULT_USER_ID
 from lib.infra.content_digest import prefixed_canonical_json_digest
 from lib.local_runtime.config import LocalRuntimeConfig, get_local_runtime_config
+from lib.local_runtime.l20_resource_state import resource_handoff_complete
 
 _PROTOCOL = "arcreel-mcp-vision/v2"
 _REPORT_SCHEMA = "arcreel-native-agent-report/v1"
@@ -109,7 +110,11 @@ def _read_status(
             if row.get("tool_name") == "finish_local_session":
                 continue
         elif event == "native_finalization" and direct:
-            if row.get("tool_name") != "finish_local_session" or row.get("original_service_restored") is not True:
+            # Older successful restore receipts omitted state; only that legacy
+            # shape defaults to restored. Unloaded closure requires explicit proof.
+            if row.get("tool_name") != "finish_local_session" or not resource_handoff_complete(
+                {"state": "restored", **row}
+            ):
                 continue
         else:
             continue

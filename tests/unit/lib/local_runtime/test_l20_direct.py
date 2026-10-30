@@ -24,7 +24,7 @@ from lib.infra.ffmpeg import ffmpeg_executable
 from lib.infra.media_probe import probe_media
 from lib.local_runtime.l20_capabilities import IMAGE_MODEL, IMAGE_REFERENCE_LIMIT
 from lib.local_runtime.l20_direct_backend import L20DirectImageBackend, L20DirectVideoBackend
-from lib.local_runtime.l20_direct_config import L20DirectConfig
+from lib.local_runtime.l20_direct_config import L20DirectConfig, get_l20_direct_config
 from lib.local_runtime.l20_direct_gateway import L20DirectError, L20DirectGateway
 from lib.local_runtime.l20_direct_graphs import (
     aligned_frames,
@@ -33,6 +33,18 @@ from lib.local_runtime.l20_direct_graphs import (
     normalized_workflow_sha256,
 )
 from tests.fakes import captured_provider_job_ids
+
+
+@pytest.mark.parametrize(("value", "expected"), [("false", False), ("true", True)])
+def test_model_restore_policy_uses_the_explicit_local_setting(monkeypatch, value, expected):
+    monkeypatch.setenv("ARCREEL_L20_RESTORE_ORIGINAL_MODELS", value)
+    assert get_l20_direct_config().restore_original_models is expected
+
+
+def test_invalid_model_restore_policy_is_rejected(monkeypatch):
+    monkeypatch.setenv("ARCREEL_L20_RESTORE_ORIGINAL_MODELS", "maybe")
+    with pytest.raises(ValueError, match="RESTORE_ORIGINAL_MODELS"):
+        get_l20_direct_config()
 
 
 def png(size=(64, 64)):

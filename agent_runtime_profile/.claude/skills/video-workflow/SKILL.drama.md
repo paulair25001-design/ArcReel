@@ -199,6 +199,13 @@ dispatch `generate-assets` 子智能体：
 
 **触发**：`next_action.type == "generate_videos"`
 
+全自主的 storyboard + TTS 项目在本步骤先检查旁白预算：没有在途任务且存在缺失旁白时，按
+`generate-narration-audio` 调原生工具补齐，等待终态后刷新计划。通过
+`get_episode_production_status.units[].speech_timing` 比较编排时长和实际 WAV，区分估算与实测、
+current 与 stale。超长时按原生脚本编辑工具调整时长或分镜，保留逐字正文与已有产物；
+不以压快语速、长定格或反复重播同一动作作为默认方案，不为这项检查另建工作流或后台脚本。
+已有视频的集不因发现预算问题自动重做，修复沿用现有授权与原生局部重做机制。
+
 入队前计划可能先交回 `confirm_request_duration`：整批准入判定要求确认申请档位。按
 `admission.confirmation.tiers[]` 逐档位展示涉及的视频单元与费用，取得确认后经
 `confirmed_request_durations` 带回下一次 `mcp__arcreel__get_workflow_plan`（见

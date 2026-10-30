@@ -17,6 +17,7 @@ import portalocker
 from lib.infra.async_thread import run_sync_transaction
 from lib.infra.json_io import atomic_write_json
 from lib.local_runtime.l20_direct_config import L20DirectConfig, get_l20_direct_config
+from lib.local_runtime.l20_resource_state import resource_handoff_complete
 from lib.local_runtime.l20_transport import L20SSHTransport
 
 
@@ -86,11 +87,11 @@ class L20ResourceSession:
             raise ValueError("ArcReel project ownership is required")
         with self._lock():
             record = self._read()
-            if record and record["state"] != "restored":
+            if record and not resource_handoff_complete(record):
                 if record["project"] != project:
                     raise RuntimeError("Another ArcReel project owns the L20 resource session")
                 if record["state"] != "active":
-                    raise RuntimeError("The previous resource transition needs restoration before new media")
+                    raise RuntimeError("The previous resource transition needs finalization before new media")
                 if self._snapshot(record)["models"]:
                     raise RuntimeError("Original models were reloaded during media production; pause for inspection")
                 self._ready(record)
@@ -109,6 +110,7 @@ class L20ResourceSession:
                 "session": session,
                 "project": project,
                 "state": "releasing",
+                "restore_original_models": self.config.restore_original_models,
                 "original": original,
                 "remote_root": "/nvme1/.media-workspace/work/arcreel/" + session,
                 "unload_requests": [],
@@ -158,14 +160,20 @@ class L20ResourceSession:
                 try:
                     self._restore(record, before_submission=True)
                 except Exception as error:
-                    record.update(state="restoration_required", restoration_error=type(error).__name__)
+                    record.update(
+                        state="restoration_required" if self.config.restore_original_models else "closure_required",
+                        restoration_error=type(error).__name__,
+                    )
                     self._save(record)
                 raise
 
     def _restore(self, record, *, before_submission=False):
-        record["state"] = "restoring"
+        record["restore_original_models"] = self.config.restore_original_models
+        record["state"] = "restoring" if self.config.restore_original_models else "closing"
         self._save(record)
-        if record.get("startup_requested") or record.get("comfy"):
+        if (record.get("startup_requested") or record.get("comfy")) and not record.get("engine_stop", {}).get(
+            "stopped"
+        ):
             if not before_submission and record.get("comfy"):
                 with self._http() as http:
                     response = http.get("/queue")
@@ -177,6 +185,11 @@ class L20ResourceSession:
                     response.raise_for_status()
             record["engine_stop"] = self.transport.rpc("stop_comfy", {"root": record["remote_root"]})
             self._save(record)
+        if not self.config.restore_original_models:
+            record.update(state="closed", original_service_restored=False, resource_released=True)
+            self._save(record)
+            self.transport.close()
+            return record
         current = self._snapshot(record)
         original_ids = {x["id"] for x in record["original"]["models"]}
         if {x["id"] for x in current["models"]} - original_ids:
@@ -207,8 +220,18 @@ class L20ResourceSession:
         self.config.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         with portalocker.Lock(str(self.config.state_dir / "gpu.lock"), timeout=600), self._lock():
             record = self._read()
-            if not record or record["state"] == "restored":
-                return {"state": "restored", "original_service_restored": True, "active": False}
+            if not record:
+                if self.config.restore_original_models:
+                    return {"state": "restored", "original_service_restored": True, "active": False}
+                return {
+                    "state": "closed",
+                    "restore_original_models": False,
+                    "original_service_restored": False,
+                    "resource_released": True,
+                    "active": False,
+                }
+            if resource_handoff_complete(record):
+                return {**record, "active": False}
             if project is not None and record["project"] != project:
                 raise RuntimeError("Only the owning ArcReel project can finish this resource session")
             return self._restore(record)

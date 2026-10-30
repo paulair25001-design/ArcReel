@@ -331,14 +331,17 @@ class TestScreenplaySourceKind:
         assert "\n- **segment_break**：沿用剧本自带的场次 / 场景切换" in screenplay
         assert "不要重新切碎作者的场次" not in novel
 
-    def test_normalize_duration_rule_splits_into_three_sub_items(self):
+    def test_normalize_duration_rule_keeps_speech_budget_and_measured_review_before_soft_target(self):
         prompt = self._normalize_prompt("novel", episode_target_duration=90)
         section = prompt.split("- **duration_seconds**：\n", 1)[1].split("\n- **segment_break**", 1)[0]
-        lines = section.split("\n")
-        assert [line.split("：", 1)[0] for line in lines] == ["  - 档位", "  - 口播下界", "  - 单集目标"]
-        assert "默认 8 秒" in lines[0]
-        assert "不低于" in lines[1]
-        assert "本集成片目标时长约 90 秒" in lines[2]
+        rules = dict(line.strip().removeprefix("- ").split("：", 1) for line in section.split("\n"))
+        assert "默认 8 秒" in rules["档位"]
+        assert "完整发声与留白" in rules["口播下界"]
+        assert "先按语义和动作拆为连续分镜" in rules["超长口播"]
+        assert "不删词、不重读" in rules["超长口播"]
+        assert "WAV 实测时长" in rules["实测复核"]
+        assert "本集成片目标时长约 90 秒" in rules["单集目标"]
+        assert "取最长档即可" not in section
         assert "保存时会另有提示" not in prompt
 
         without_target = self._normalize_prompt("novel")

@@ -163,6 +163,9 @@ async def test_read_status_reports_exact_wav_and_all_native_writer_types_without
         1.25,
     )
     assert unit["audio"]["current"] is False  # Existing bytes alone never fake a formal current claim.
+    assert unit["speech_timing"]["measured_narration_seconds"] is None
+    assert unit["speech_timing"]["measured_excess_seconds"] is None
+    assert unit["speech_timing"]["audio_status"] == unit["audio"]["status"]
     assert unit["first"]["selected_version"] == 1
     assert unit["first"]["versions"][0]["sha256"] == hashlib.sha256(b"first-image").hexdigest()
     assert unit["end_frame"]["sha256"] == hashlib.sha256(b"independent-tail").hexdigest()
@@ -175,6 +178,65 @@ async def test_read_status_reports_exact_wav_and_all_native_writer_types_without
     }
     assert result["goal_complete_technical"] is False
     assert {str(path): path.read_bytes() for path in directory.rglob("*") if path.is_file()} == before
+
+
+async def test_unloaded_closure_is_inactive_without_claiming_the_original_service_was_restored(tmp_path):
+    projects, _ = _project(tmp_path)
+    state_path = tmp_path / "resource.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "project": "demo",
+                "state": "closed",
+                "restore_original_models": False,
+                "original_service_restored": False,
+                "resource_released": True,
+            }
+        )
+    )
+
+    status = await read_episode_production_status(
+        "demo", 2, projects=projects, queue=QueueFacts(), resource_state_path=state_path
+    )
+
+    assert status["resource"] == {
+        "owner_project": "demo",
+        "state": "closed",
+        "active": False,
+        "restore_original_models": False,
+        "original_service_restored": False,
+        "resource_released": True,
+    }
+
+
+async def test_speech_budget_uses_project_estimate_and_actual_wav_without_changing_the_script(tmp_path):
+    projects, directory = _project(tmp_path)
+    project_path = directory / "project.json"
+    project = json.loads(project_path.read_bytes())
+    project.update(source_language="zh", speech_rate_units_per_second=2)
+    project_path.write_text(json.dumps(project))
+    script_path = directory / "scripts/episode_2.json"
+    script = json.loads(script_path.read_bytes())
+    script["segments"][0]["duration_seconds"] = 1
+    script["segments"][0]["video_prompt"] = {"action": "The glass jar remains still", "dialogue": []}
+    script_path.write_text(json.dumps(script))
+    (directory / "audio").mkdir()
+    with wave.open(str(directory / "audio/segment_E2S01.wav"), "wb") as source:
+        source.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
+        source.writeframes(b"\0\0" * 108800)
+    before = script_path.read_bytes()
+
+    result = await read_episode_production_status(
+        "demo", 2, projects=projects, queue=QueueFacts(), resource_state_path=tmp_path / "resource.json"
+    )
+    [unit] = result["units"]
+    timing = unit["speech_timing"]
+    assert timing["estimated_seconds"] == 3.5
+    assert timing["estimated_excess_seconds"] == 2.5
+    assert timing["measured_narration_seconds"] == 13.6
+    assert timing["measured_excess_seconds"] == 12.6
+    assert result["goal_complete_technical"] is False
+    assert script_path.read_bytes() == before
 
 
 async def test_existing_episode_without_formal_script_is_readable_but_unknown_episode_is_refused(tmp_path):

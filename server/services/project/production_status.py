@@ -50,7 +50,9 @@ from lib.script.script_editor import resolve_items
 from lib.script.script_models import get_generated_assets
 from lib.script.storyboard_sequence import get_storyboard_items
 from lib.speech.speech_composition import SpeechMode, admit_script_unit
+from lib.speech.speech_rate import estimate_spoken_seconds, project_speech_rate_override
 from lib.workflow.workflow_state import WorkflowStateService
+from server.services.project.editorial_facts import timeline_editing_facts
 from server.services.project.visual_observation import read_visual_observation_status
 
 
@@ -194,6 +196,8 @@ def _media_facts(
 
 
 def _resource_facts(state_path: Path) -> dict[str, Any]:
+    from lib.local_runtime.l20_resource_state import resource_handoff_complete
+
     if not state_path.exists():
         return {"owner_project": None, "state": "not_started", "active": False, "original_service_restored": None}
     try:
@@ -204,8 +208,9 @@ def _resource_facts(state_path: Path) -> dict[str, Any]:
         return {
             "owner_project": record.get("project"),
             "state": state,
-            "active": state != "restored",
+            "active": not resource_handoff_complete(record),
             "original_service_restored": record.get("original_service_restored") is True,
+            **{key: record[key] for key in ("restore_original_models", "resource_released") if key in record},
         }
     except (OSError, ValueError):
         return {"owner_project": None, "state": "unreadable", "active": None, "original_service_restored": None}
@@ -267,6 +272,11 @@ def _read_episode(
                 "unit_id": unit.unit_id,
                 "text": unit.subtitle_text,
                 "declared_seconds": unit.scripted_duration_us / 1_000_000,
+                "speech_timing": {
+                    "estimated_seconds": estimate_spoken_seconds(
+                        unit.subtitle_text, project.get("source_language"), project_speech_rate_override(project)
+                    ),
+                },
                 "speech": admit_script_unit(kind, item).to_dict(),
                 "audio": _media_facts(
                     **common,
@@ -567,6 +577,15 @@ async def read_episode_production_status(
                         media["has_audio"] = audio_stream is not None and audio_stream.packet_count > 0
                 except (OSError, ValueError):
                     media["duration_problem"] = "media_unreadable"
+        timing = unit["speech_timing"]
+        timing["estimated_excess_seconds"] = round(max(0.0, timing["estimated_seconds"] - unit["declared_seconds"]), 6)
+        audio = unit["audio"]
+        measured = audio["actual_seconds"] if _speech_mode(unit) is SpeechMode.NARRATOR_VOICEOVER else None
+        timing["measured_narration_seconds"] = measured
+        timing["measured_excess_seconds"] = (
+            round(max(0.0, measured - unit["declared_seconds"]), 6) if measured is not None else None
+        )
+        timing["audio_status"] = audio["status"]
     result["active_tasks"] = active
     result["failed_tasks"] = failed
     units = [unit["unit_id"] for unit in result["units"]]
@@ -600,6 +619,7 @@ async def read_episode_production_status(
                 "units_match": matches,
                 "final_cut": final,
                 "readout": readout.model_dump(mode="json"),
+                "editing_facts": timeline_editing_facts(readout),
             }
         )
     result["timelines"] = timelines

@@ -107,6 +107,27 @@ async def test_parent_finalization_after_review_and_real_write_establishes_deliv
     assert "approved" not in result
 
 
+@pytest.mark.parametrize("released", [True, False, None])
+async def test_disabled_restoration_requires_an_actual_closed_resource_handoff(delivery_case, released):
+    _write(
+        delivery_case,
+        events=[
+            _event(
+                state="closed",
+                original_service_restored=False,
+                restore_original_models=False,
+                resource_released=released,
+            )
+        ],
+    )
+
+    result = await _read(delivery_case)
+
+    assert result["ready"] is (released is True)
+    if released is not True:
+        assert result["problem"] == "native_finalization_missing"
+
+
 @pytest.mark.parametrize("late_event", ["review", "write", "child_write"])
 async def test_new_native_work_invalidates_a_previous_finalization(delivery_case, late_event):
     reports = [_review()]

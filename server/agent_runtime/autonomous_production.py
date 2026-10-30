@@ -20,6 +20,7 @@ from uuid import uuid4
 from lib.generation.generation_queue import get_generation_queue
 from lib.infra.logging_utils import redact_diagnostic_text
 from lib.local_runtime.config import local_only_enabled
+from lib.local_runtime.l20_resource_state import resource_handoff_complete
 from lib.project.project_change_hints import register_project_change_batch_listener
 from server.agent_runtime.autonomy_store import ACTIVE_STATES, AutonomyStore
 from server.services.project.production_status import read_episode_production_status
@@ -67,6 +68,7 @@ def compact_facts(facts: dict[str, Any]) -> dict[str, Any]:
                 "unit_id": unit.get("unit_id"),
                 "text": unit.get("text"),
                 "declared_seconds": unit.get("declared_seconds"),
+                **({"speech_timing": unit["speech_timing"]} if "speech_timing" in unit else {}),
                 **({"speech": unit["speech"]} if "speech" in unit else {}),
                 **media,
                 "end_frame": unit.get("end_frame", {}),
@@ -104,7 +106,15 @@ def compact_facts(facts: dict[str, Any]) -> dict[str, Any]:
         "native_delivery": {key: facts.get("native_delivery", {}).get(key) for key in ("ready", "action", "problem")},
         "goal_complete_technical": bool(facts.get("goal_complete_technical")),
         "resource": {
-            key: resource.get(key) for key in ("owner_project", "project", "state", "original_service_restored")
+            key: resource.get(key)
+            for key in (
+                "owner_project",
+                "project",
+                "state",
+                "original_service_restored",
+                "restore_original_models",
+                "resource_released",
+            )
         },
     }
 
@@ -143,7 +153,7 @@ def resource_closed(facts: dict[str, Any], project: str) -> bool:
         return owner is None
     if owner is not None and owner != project:
         return True
-    return state in {"restored", "closed"} and resource.get("original_service_restored") is True
+    return resource_handoff_complete(resource)
 
 
 def continuation_message(goal: dict[str, Any], facts: dict[str, Any], mode: str) -> str:
@@ -176,9 +186,14 @@ def continuation_message(goal: dict[str, Any], facts: dict[str, Any], mode: str)
         "按原生 speech 发声归属处理声音：角色对白保留视频原声音轨，不要求旁白 WAV；"
         "画外旁白使用本地 TTS 并静音该镜头的视频原声，完整旁白按实测容纳；静默镜头可保留环境声。"
         "发声归属不合法时先按原生要求修复，不把角色对白送入旁白 TTS。等待全部写入任务终态后继续。"
+        "按 speech_timing 先核对估算与实测配音时长，估算不等于实测；保留语义停顿，"
+        "不要把超长口播硬塞进短镜头，也不要靠长定格或反复重播同一动作容纳全部旁白。"
+        "剪辑前读取 editing_facts：复用片段的每次入出点都须在原生审片报告的可用区间内，"
+        "同镜头尾接头的溶解不是不同镜头的衔接；按剧情处理光向、动作和声音承接。"
+        "这些时长事实不是新质量评分或额外审批，不自动重生成已有素材。"
         "调用生成或编辑工具得到在途任务后，结束本轮并说明等待；后台服务会在原生任务完成后继续同一会话，"
         "不要反复轮询模型或自行启动后台脚本。所有已有提交先对账，不重放旧工具调用。"
-        "最终目标是指定集的 current 成片，旁白项目需完整旁白和烧录字幕，随后 finish_local_session 恢复模型并真实收尾。"
+        "最终目标是指定集的 current 成片，旁白项目需完整旁白和烧录字幕，随后 finish_local_session 按当前模型恢复设置真实收尾。"
         "旧成片存在和审片报告齐全不表示本目标已交付；以实际队列与版本为准，不把自己提过的批次名当作已受理任务。"
         "不要把一次 end_turn、视频片段齐备或创建时间线当成最终交付。没有实际听审或连续播放证据时不宣称已通过。"
         "看图以 inspect_images 经本地视觉通道实际送入的图片为据；历史 MEDIA 路径、文本占位或模型自述都不是视觉证据。"

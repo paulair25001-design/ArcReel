@@ -18,6 +18,7 @@ class L20DirectConfig:
     state_dir: Path
     poll_interval: float = 2
     timeout_seconds: float = 9600
+    restore_original_models: bool = True
 
     def __post_init__(self) -> None:
         for value in (self.comfy_url, self.router_url):
@@ -39,9 +40,14 @@ class L20DirectConfig:
                 raise ValueError("L20 must use the explicit project-owned loopback connection")
         if not all(math.isfinite(x) and x > 0 for x in (self.poll_interval, self.timeout_seconds)):
             raise ValueError("L20 polling and timeout must be positive and finite")
+        if type(self.restore_original_models) is not bool:
+            raise ValueError("L20 model restoration must be a boolean")
 
 
 def get_l20_direct_config() -> L20DirectConfig:
+    restore = os.environ.get("ARCREEL_L20_RESTORE_ORIGINAL_MODELS", "true").strip().lower()
+    if restore not in {"true", "false", "1", "0", "yes", "no"}:
+        raise ValueError("ARCREEL_L20_RESTORE_ORIGINAL_MODELS must be true or false")
     return L20DirectConfig(
         comfy_url=os.environ.get("ARCREEL_L20_COMFY_URL", "http://127.0.0.1:18191").rstrip("/"),
         router_url=os.environ.get("ARCREEL_L20_ROUTER_URL", "http://127.0.0.1:18080").rstrip("/"),
@@ -50,4 +56,5 @@ def get_l20_direct_config() -> L20DirectConfig:
         ).expanduser(),
         poll_interval=float(os.environ.get("ARCREEL_L20_POLL_INTERVAL", "2")),
         timeout_seconds=float(os.environ.get("ARCREEL_L20_TIMEOUT_SECONDS", "9600")),
+        restore_original_models=restore in {"true", "1", "yes"},
     )
