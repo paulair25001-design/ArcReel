@@ -138,7 +138,7 @@ class _VideoPromptCore(BaseModel):
 
     model_config = _STRICT_CONFIG
 
-    action: str = Field(description="该分镜时长内的动作描述；镜头运动由 camera_motion 承载")
+    action: str = Field(description="该分镜时长内的动作起点、路径与终点；补足主体与镜头的相对运动、接触对象和方向")
     camera_motion: Annotated[CameraMotion, BeforeValidator(_normalize_camera_motion)] = Field(description="镜头运动")
     ambiance_audio: str = Field(description="环境音效（画内音）")
 

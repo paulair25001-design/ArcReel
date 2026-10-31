@@ -199,6 +199,10 @@ dispatch `generate-assets` 子智能体：
 
 **触发**：`next_action.type == "generate_videos"`
 
+分镜图生视频先按 [generate-video](../generate-video/SKILL.md) 的「分镜图生视频的首尾与运动」
+查看实际首尾组合；首图改过时重新核对独立尾帧。把动作起点、位移/接触和前后镜头方向核对清楚后再派生成，
+不只凭“首尾文件齐全”或旧版本审图记录推进。原生审图、审片结论也须覆盖动作与空间连续性。
+
 全自主的 storyboard + TTS 项目在本步骤先检查旁白预算：没有在途任务且存在缺失旁白时，按
 `generate-narration-audio` 调原生工具补齐，等待终态后刷新计划。通过
 `get_episode_production_status.units[].speech_timing` 比较编排时长和实际 WAV，区分估算与实测、

@@ -311,3 +311,50 @@ async def test_provenance_and_wire_image_use_one_file_snapshot(tmp_path: Path, m
     assert _picture(envelope.images[0].data)[0] == "red"
     assert reads == 1
     assert original_read(snapshot_path) == blue
+
+
+async def test_bound_tail_is_read_independently_of_current_and_historical_storyboards(tmp_path: Path) -> None:
+    ctx = _harness(tmp_path)
+    _install(ctx, "storyboards", "E1S01", "red")
+    _install(ctx, "storyboards", "E1S01", "green")
+    script = ctx.pm.load_script_readonly("demo", "episode_1.json")
+    script["segments"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
+    ctx.pm.save_script("demo", script, "episode_1.json", validate=False)
+    tail = ctx.project_path / "end_frames/scene_E1S01.png"
+    tail.parent.mkdir()
+    Image.new("RGB", (160, 90), "blue").save(tail)
+    before = {path: path.read_bytes() for path in ctx.project_path.rglob("*") if path.is_file()}
+
+    outcome, envelope = await _inspect(ctx, {"resource_type": "storyboard", "ids": ["E1S01"], "frame": "end"})
+
+    assert outcome.problem is None
+    inspected = envelope.structured["inspect_images"]
+    assert inspected["frame"] == "end"
+    assert inspected["images"] == [
+        {
+            "id": "E1S01",
+            "version": None,
+            "available_versions": [],
+            "status": "ok",
+            "image": 1,
+            **_provenance(before[tail], envelope.images[0].data),
+        }
+    ]
+    assert _picture(envelope.images[0].data) == ("blue", (160, 90))
+    assert before == {path: path.read_bytes() for path in ctx.project_path.rglob("*") if path.is_file()}
+
+
+@pytest.mark.parametrize("pointer", [None, "../outside.png", "end_frames/missing.png"])
+async def test_missing_or_unsafe_tail_never_falls_back_to_the_first_frame(tmp_path: Path, pointer: str | None) -> None:
+    ctx = _harness(tmp_path)
+    _install(ctx, "storyboards", "E1S01", "red")
+    Image.new("RGB", (160, 90), "blue").save(ctx.project_path.parent / "outside.png")
+    script = ctx.pm.load_script_readonly("demo", "episode_1.json")
+    script["segments"][0]["end_frame_image"] = pointer
+    ctx.pm.save_script("demo", script, "episode_1.json", validate=False)
+
+    outcome, envelope = await _inspect(ctx, {"resource_type": "storyboard", "ids": ["E1S01"], "frame": "end"})
+
+    assert outcome.problem is None
+    assert envelope.structured["inspect_images"]["images"][0]["status"] == "image_missing"
+    assert not envelope.images

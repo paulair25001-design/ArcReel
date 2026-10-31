@@ -13,9 +13,9 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 from lib.artifacts.version_manager import VersionManager
 from lib.final_cut.basis import version_snapshot
@@ -66,6 +66,16 @@ class InspectImagesRequest(BaseModel):
         ge=1,
         description="版本号，对列表中每一项都取这个版本；省略时取各项的 current 版本",
     )
+    frame: Literal["first", "end"] = Field(
+        default="first",
+        description="storyboard 默认看分镜首图；end 读取剧本当前绑定的目标尾帧快照，不指定 version",
+    )
+
+    @model_validator(mode="after")
+    def validate_frame_selection(self) -> Self:
+        if self.frame == "end" and (self.resource_type != "storyboard" or self.version is not None):
+            raise ValueError("frame=end requires resource_type=storyboard and no version")
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,10 +106,11 @@ class _ImageSnapshot:
 class InspectImagesResult:
     resource_type: str
     images: tuple[InspectedImage, ...]
+    frame: Literal["first", "end"] = "first"
 
 
-def _storyboard_images(services: Services, project_name: str) -> dict[str, str | None]:
-    """项目全部剧本里的分镜 ID 与登记的当前图；参考生视频的剧本没有分镜。"""
+def _storyboard_images(services: Services, project_name: str, frame: str) -> dict[str, str | None]:
+    """项目全部剧本里的分镜 ID 与登记的首图或尾帧；参考生视频的剧本没有分镜。"""
     found: dict[str, str | None] = {}
     for script_name in sorted(services.projects.list_scripts(project_name)):
         try:
@@ -111,17 +122,21 @@ def _storyboard_images(services: Services, project_name: str) -> dict[str, str |
             continue
         for item in items:
             if isinstance(item, dict) and item.get(id_field):
-                pointer = get_generated_assets(item).get("storyboard_image")
+                pointer = (
+                    item.get("end_frame_image")
+                    if frame == "end"
+                    else get_generated_assets(item).get("storyboard_image")
+                )
                 found[str(item[id_field])] = pointer if isinstance(pointer, str) and pointer else None
     return found
 
 
 def _resolve_ids(
-    services: Services, project_name: str, resource_type: str, ids: list[str]
+    services: Services, project_name: str, resource_type: str, ids: list[str], frame: str
 ) -> tuple[list[tuple[str, str | None]], list[str]]:
     """返回归一后的 ID 与登记的当前图，以及不存在的请求 ID。"""
     if resource_type == "storyboard":
-        known = _storyboard_images(services, project_name)
+        known = _storyboard_images(services, project_name, frame)
         return [(item_id, known[item_id]) for item_id in ids if item_id in known], [
             item_id for item_id in ids if item_id not in known
         ]
@@ -172,6 +187,7 @@ async def inspect_images(
     services: Services,
 ) -> ToolOutcome[InspectImagesResult]:
     resource_type = request.value.resource_type
+    frame = request.value.frame
     ids = list(dict.fromkeys(request.value.ids))
     if len(ids) > MAX_IMAGES_PER_CALL:
         return tool_problem(
@@ -179,9 +195,11 @@ async def inspect_images(
             code="image_limit_exceeded",
             params={"max_images_per_call": MAX_IMAGES_PER_CALL},
         )
-    label = LABEL_ZH[resource_type]
+    label = "目标尾帧" if frame == "end" else LABEL_ZH[resource_type]
     try:
-        resolved, missing = await asyncio.to_thread(_resolve_ids, services, scope.project_name, resource_type, ids)
+        resolved, missing = await asyncio.to_thread(
+            _resolve_ids, services, scope.project_name, resource_type, ids, frame
+        )
         if missing:
             return tool_problem(
                 f"{label}的对象不存在：{', '.join(missing)}",
@@ -189,19 +207,19 @@ async def inspect_images(
                 params={"resource_type": resource_type, "ids": missing},
             )
 
-        version_type = edit_version_resource_type(resource_type)
+        version_type = None if frame == "end" else edit_version_resource_type(resource_type)
 
         def inspect_all() -> list[InspectedImage] | ToolOutcome[Any]:
             versions = VersionManager(services.projects.get_project_path(scope.project_name))
             project_path = services.projects.get_project_path(scope.project_name)
             targets: list[tuple[str, int | None, list[int], str | None]] = []
             for item_id, pointer in resolved:
-                available = _available_versions(versions, version_type, item_id)
+                available = _available_versions(versions, version_type, item_id) if version_type is not None else []
                 version = request.value.version
-                if version is None:
+                if version is None and version_type is not None:
                     current = versions.get_current_version(version_type, item_id)
                     version = current if current > 0 else None
-                elif version not in available:
+                elif version is not None and version not in available:
                     return tool_problem(
                         f"{label}「{item_id}」没有版本 v{version}；现有版本：{', '.join(map(str, available)) or '无'}",
                         code="version_not_found",
@@ -212,7 +230,7 @@ async def inspect_images(
             for item_id, version, available, pointer in targets:
                 found = (
                     version_snapshot(project_path, versions, version_type, item_id, version)
-                    if version is not None
+                    if version is not None and version_type is not None
                     else None
                 )
                 # 仅当前产物归档可省略历史；无版本时只读登记的当前图，不补写版本记录。
@@ -248,7 +266,7 @@ async def inspect_images(
         inspected = await asyncio.to_thread(inspect_all)
         if isinstance(inspected, ToolOutcome):
             return inspected
-        return ToolOutcome(value=InspectImagesResult(resource_type=resource_type, images=tuple(inspected)))
+        return ToolOutcome(value=InspectImagesResult(resource_type=resource_type, images=tuple(inspected), frame=frame))
     except Exception as exc:
         return tool_error(_OPERATION, exc)
 
@@ -275,7 +293,13 @@ def inspect_images_projection(value: InspectImagesResult) -> dict[str, Any]:
         if image.detail is not None:
             entry["detail"] = image.detail
         images.append(entry)
-    return {"inspect_images": {"resource_type": value.resource_type, "images": images}}
+    return {
+        "inspect_images": {
+            "resource_type": value.resource_type,
+            "images": images,
+            **({"frame": "end"} if value.frame == "end" else {}),
+        }
+    }
 
 
 def inspect_images_images(value: InspectImagesResult) -> list[ToolImage]:
@@ -284,7 +308,8 @@ def inspect_images_images(value: InspectImagesResult) -> list[ToolImage]:
 
 def inspect_images_summary(value: InspectImagesResult) -> str:
     unseen = [image.id for image in value.images if image.jpeg is None]
-    text = f"已取出 {len(value.images) - len(unseen)} 张{LABEL_ZH[value.resource_type]}，图片按 image 序号附在后面"
+    label = "目标尾帧" if value.frame == "end" else LABEL_ZH[value.resource_type]
+    text = f"已取出 {len(value.images) - len(unseen)} 张{label}，图片按 image 序号附在后面"
     return f"{text}；没有可看的图：{', '.join(unseen)}" if unseen else text
 
 

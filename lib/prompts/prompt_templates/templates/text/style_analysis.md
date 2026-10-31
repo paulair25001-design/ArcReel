@@ -11,4 +11,4 @@ applies_to: {}
 slots: {}
 protected: false
 ---
-Analyze the visual style of this image. Describe the lighting, color palette, medium (e.g., oil painting, digital art, photography), texture, and overall mood. Do NOT describe the subject matter (e.g., people, objects) or specific content. Focus ONLY on the artistic style. Provide a concise comma-separated list of descriptors suitable for an image generation prompt.
+Extract the reusable artistic style of this reference: medium, rendering method, stylization and proportions, material treatment, texture, palette and contrast. For a collage or design sheet, describe the style shared by its panels rather than their layout. Separate rendering qualities such as soft shading from scene-specific light sources, weather and time of day. Do not promote a character sheet's studio lighting, blank or gradient backdrop, panel borders, poses or camera composition into the project's universal style. Do NOT describe the subject matter (people, objects) or specific content. Provide a concise comma-separated list of transferable descriptors; each shot will supply its own environment, camera and lighting.

@@ -107,6 +107,10 @@ def _required_frames(projects: ProjectManager, project_name: str, episode_id: in
                 ]
                 if role == "first" and facts is not None and not candidates and not history.get("current_version"):
                     matching = [{"resource_type": "storyboard", "id": unit_id, "version": None, **facts}]
+                if role == "tail" and facts is not None:
+                    matching.append(
+                        {"resource_type": "storyboard", "id": unit_id, "version": None, "frame": "end", **facts}
+                    )
                 required.append(
                     {
                         "resource_type": "storyboard",
@@ -144,6 +148,10 @@ def _frozen_frames(
             and candidate["source_pixel_sha256"] == facts["source_pixel_sha256"]
             and candidate["wire_image_sha256"] == facts["wire_image_sha256"]
         ]
+        if role == "tail" and facts is not None:
+            matching.append(
+                {"resource_type": "storyboard", "id": resource_id, "version": None, "frame": "end", **facts}
+            )
         required.append(
             {
                 "resource_type": "storyboard",
@@ -309,7 +317,7 @@ def _read_status(
         problem = "vision_audit_unreadable"
     missing: list[dict[str, Any]] = []
     matches: list[dict[str, Any]] = []
-    inspection: dict[int | None, list[str]] = {}
+    inspection: dict[tuple[int | None, str], list[str]] = {}
     public_required: list[dict[str, Any]] = []
     for frame in required:
         public = {key: value for key, value in frame.items() if key != "candidates"}
@@ -320,6 +328,7 @@ def _read_status(
                 for receipt in observed
                 if any(
                     type(receipt.get("version")) is type(candidate.get("version"))
+                    and receipt.get("frame", "first") == candidate.get("frame", "first")
                     and all(
                         receipt.get(key) == candidate.get(key)
                         for key in ("resource_type", "id", "version", *_PROVENANCE)
@@ -334,7 +343,7 @@ def _read_status(
             continue
         missing.append({**public, "problem": frame.get("problem", "frame_not_observed_by_model")})
         for candidate in frame["candidates"][:1]:
-            ids = inspection.setdefault(candidate["version"], [])
+            ids = inspection.setdefault((candidate["version"], candidate.get("frame", "first")), [])
             if candidate["id"] not in ids:
                 ids.append(candidate["id"])
     requests = [
@@ -342,8 +351,9 @@ def _read_status(
             "resource_type": "storyboard",
             "ids": ids[start : start + 16],
             **({"version": version} if version is not None else {}),
+            **({"frame": "end"} if frame == "end" else {}),
         }
-        for version, ids in inspection.items()
+        for (version, frame), ids in inspection.items()
         for start in range(0, len(ids), 16)
     ]
     return {

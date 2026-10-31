@@ -21,6 +21,8 @@ INSPECT_IMAGES = ToolDeclaration(
         "用来判断生成结果能否使用：有没有崩坏，与设定或提示词是否相符，同一角色是否前后一致。"
         "一次调用只看同一类型（resource_type）；version 对列表中的每一项都生效，省略时取各项的 current 版本，"
         "比较同一项的历史版本时，每个版本各调用一次。"
+        "storyboard 可传 frame=end 直接看剧本已绑定的目标尾帧；不传 version，返回 version=null、available_versions=[]。"
+        "首图修改后用默认调用与 frame=end 分别看两张实际输入，核对相机、人物、场景和动作起终点；不会修改尾帧。"
         "默认 current 没有版本记录但登记了当前图时仍可看图，version 为 null、available_versions 为空；不补写版本记录。"
         f"每次调用最多 {MAX_IMAGES_PER_CALL} 张图，超出返回 image_limit_exceeded，请分批调用；"
         f"图片按原比例缩到长边不超过 {MAX_IMAGE_EDGE} px 的 JPEG。"

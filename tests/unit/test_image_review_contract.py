@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 from server.agent_runtime.agent_access_policy import AgentAccessPolicy
-from server.media_tools.image_review import MAX_IMAGES_PER_CALL
+from server.media_tools.image_review import MAX_IMAGES_PER_CALL, InspectImagesRequest
 
 REPO = Path(__file__).resolve().parents[2]
 PROFILE = REPO / "agent_runtime_profile"
@@ -49,6 +49,12 @@ def test_review_images_definition_grants_exactly_the_tools_the_access_policy_all
 
 def test_reviewer_batches_by_the_per_call_image_limit() -> None:
     assert f"一次最多 {MAX_IMAGES_PER_CALL} 张" in REVIEWER.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("arguments", [{"resource_type": "character"}, {"resource_type": "storyboard", "version": 1}])
+def test_tail_selection_rejects_asset_or_historical_version_requests(arguments) -> None:
+    with pytest.raises(ValueError, match="frame=end requires"):
+        InspectImagesRequest.model_validate({"ids": ["E1S01"], "frame": "end", **arguments})
 
 
 @pytest.mark.parametrize("skill", ["generate-assets", "generate-storyboard"])

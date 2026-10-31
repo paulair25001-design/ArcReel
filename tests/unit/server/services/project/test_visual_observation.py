@@ -241,6 +241,35 @@ async def test_native_current_pixel_change_invalidates_an_old_observation(frames
     assert result["inspection_requests"] == [{"resource_type": "storyboard", "ids": ["E2S01"], "version": 3}]
 
 
+async def test_independent_tail_requests_native_end_frame_inspection(frames, tmp_path):
+    _, directory, _, first, tail = frames
+    independent = _png("green")
+    (directory / "end_frames/scene_E2S01.png").write_bytes(independent)
+    path = tmp_path / "audit.jsonl"
+    _audit(path, _events([_row(first, 1), _row(tail, 2)]))
+
+    result = await _read(frames, path)
+
+    assert result["ready"] is False
+    assert result["matched_count"] == 1
+    assert result["inspection_requests"] == [{"resource_type": "storyboard", "ids": ["E2S01"], "frame": "end"}]
+    assert result["missing"][0]["role"] == "tail"
+    assert result["missing"][0]["problem"] == "frame_not_observed_by_model"
+
+
+@pytest.mark.parametrize("frame_selection", ["first", "end"])
+async def test_direct_bound_tail_receipt_requires_its_frame_role(frames, tmp_path, frame_selection):
+    _, directory, _, first, _ = frames
+    bound = (directory / "end_frames/scene_E2S01.png").read_bytes()
+    path = tmp_path / "audit.jsonl"
+    _audit(path, _events([_row(first, 1), {**_row(bound, None), "frame": frame_selection}]))
+
+    result = await _read(frames, path)
+
+    assert result["ready"] is (frame_selection == "end")
+    assert result["matched_count"] == (2 if frame_selection == "end" else 1)
+
+
 async def test_cold_recovery_uses_owned_same_sid_binding_and_unique_boot_identity(frames):
     projects, _, config, first, tail = frames
     home = config.hermes_home / "sessions/child"
@@ -288,8 +317,9 @@ async def test_observed_row_cannot_cross_request_identity_in_cold_log(frames, tm
     assert (await _read(frames, path))["ready"] is False
 
 
-async def test_real_bridge_receipt_is_consumed_after_cold_native_read(frames, tmp_path):
-    *_, first, tail = frames
+@pytest.mark.parametrize("direct_tail", [False, True])
+async def test_real_bridge_receipt_is_consumed_after_cold_native_read(frames, tmp_path, direct_tail):
+    _, directory, _, first, tail = frames
     home = tmp_path / "child"
     home.mkdir()
 
@@ -297,11 +327,17 @@ async def test_real_bridge_receipt_is_consumed_after_cold_native_read(frames, tm
         transport = VisionTransport(home, base_url="http://127.0.0.1:8000/v1", model="local-vlm")
         transport.begin_turn("sid")
         module = SimpleNamespace()
+        selections = iter(
+            [("first", [(first, 1)]), ("end", [((directory / "end_frames/scene_E2S01.png").read_bytes(), None)])]
+            if direct_tail
+            else [("first", [(first, 1), (tail, 2)])]
+        )
 
         def factory(*_args):
             def handler():
+                frame, selection = next(selections)
                 rows = []
-                for index, (data, version) in enumerate(((first, 1), (tail, 2)), 1):
+                for index, (data, version) in enumerate(selection, 1):
                     jpeg = compress_image_bytes(data, max_long_edge=2000, quality=85)
                     module._cache_mcp_image_block(
                         SimpleNamespace(
@@ -317,6 +353,7 @@ async def test_real_bridge_receipt_is_consumed_after_cold_native_read(frames, tm
                             "inspect_images": {
                                 "resource_type": "storyboard",
                                 "images": rows,
+                                **({"frame": "end"} if frame == "end" else {}),
                             }
                         }
                     }
@@ -328,7 +365,7 @@ async def test_real_bridge_receipt_is_consumed_after_cold_native_read(frames, tm
         module._cache_mcp_image_block = lambda block: "MEDIA:unused"
         module._run_on_mcp_loop = lambda coro: coro()
         transport.install_mcp(module)
-        result = module._make_tool_handler("arcreel", "inspect_images", 30)()
+        results = [module._make_tool_handler("arcreel", "inspect_images", 30)() for _ in range(2 if direct_tail else 1)]
 
         class LocalClient(httpx.Client):
             pass
@@ -346,7 +383,7 @@ async def test_real_bridge_receipt_is_consumed_after_cold_native_read(frames, tm
                 "http://127.0.0.1:8000/v1/chat/completions",
                 json={
                     "model": "local-vlm",
-                    "messages": [{"role": "tool", "content": result["content"]}],
+                    "messages": [{"role": "tool", "content": result["content"]} for result in results],
                 },
             )
         assert len(requests) == 1
